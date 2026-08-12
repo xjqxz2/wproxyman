@@ -454,9 +454,18 @@ func (a *App) InstallCertificate() error {
 		return nil
 	}
 	err := a.trustStore.Install(a.ca.CertFile())
+	// macOS 上授权/落盘可能有延迟，稍等再刷新检测。
+	time.Sleep(1500 * time.Millisecond)
 	a.refreshCertInstalled()
-	a.emit("cert:status", map[string]bool{"installed": a.certTrusted()})
-	return err
+	installed := a.certTrusted()
+	a.emit("cert:status", map[string]bool{"installed": installed})
+	if err != nil {
+		return err
+	}
+	if !installed {
+		return fmt.Errorf("安装命令已执行，但系统信任库中未检测到证书；请检查 macOS 授权是否完成（钥匙串访问中确认 WProxyman CA）")
+	}
+	return nil
 }
 
 // RemoveCertificate removes the CA from the OS trust store.

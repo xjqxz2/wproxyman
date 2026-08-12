@@ -27,16 +27,19 @@ const loginKeychain = "~/Library/Keychains/login.keychain-db"
 // Install 将 CA 证书添加到 macOS 登录钥匙串，并设为受信任的根证书。
 // 使用 security add-trusted-cert 命令，-d 表示添加到 admin cert store，
 // -r trustRoot 表示设为根证书信任策略。
-// 如果带 -k 参数的方案失败（较新 macOS 路径解析问题），回退到不带 -k 的版本。
+// 注意：-k 参数必须使用展开后的绝对路径（~ 不会被 exec 展开）。
+// 若带 -k 的方案失败（较新 macOS 路径解析问题），回退到不带 -k 的版本。
 func (platformTrustStore) Install(caPath string) error {
-	out, err := exec.Command("security",
+	kc := expandHome(loginKeychain)
+	_, err := exec.Command("security",
 		"add-trusted-cert", "-d", "-r", "trustRoot",
-		"-k", loginKeychain, caPath).CombinedOutput()
+		"-k", kc, caPath).CombinedOutput()
 	if err != nil {
-		// 回退：在某些较新的 macOS 上 -k 标志的路径解析可能失败
+		// 回退：不带 -k（证书进入默认钥匙串，信任写入系统域）
 		out2, err2 := exec.Command("security", "add-trusted-cert", "-d", "-r", "trustRoot", caPath).CombinedOutput()
 		if err2 != nil {
-			return fmt.Errorf("security add-trusted-cert failed: %v: %s", err, strings.TrimSpace(string(out)))
+			return fmt.Errorf("security add-trusted-cert failed: %v: %s",
+				err2, strings.TrimSpace(string(out2)))
 		}
 		_ = out2
 	}
@@ -59,21 +62,23 @@ func (platformTrustStore) Remove(caPath string) error {
 // IsInstalled 检查 CA 证书是否已安装（搜索全部钥匙串）。
 //
 // 注意：证书可能落在登录钥匙串、iCloud 钥匙串或系统钥匙串（取决于用户
-// 授权安装时的位置），因此优先使用不带 keychain 参数的
-// `security find-certificate -a -c CN`（搜索默认搜索列表，涵盖所有钥匙串），
-// 再以登录/系统钥匙串兜底。检测必须可靠——否则应用会误以为未安装而
-// 反复触发安装，导致每次启动都弹系统授权框。
+// 授权安装时的位置），因此依次尝试：
+//  1. 默认搜索列表（login / iCloud / system 等全部钥匙串）
+//  2. 登录钥匙串
+//  3. 系统钥匙串
+// 检测必须可靠——否则应用会误以为未安装而反复触发安装，导致每次启动
+// 都弹系统授权框。
 func (platformTrustStore) IsInstalled(caPath string) (bool, error) {
 	cn, err := commonNameFromFile(caPath)
 	if err != nil {
 		return false, err
 	}
-	// 1. 默认搜索列表（login / iCloud / system 等全部钥匙串）
+	// 1. 默认搜索列表（login / iCloud / system 等）
 	out, err := exec.Command("security", "find-certificate", "-a", "-c", cn).CombinedOutput()
 	if err == nil && len(out) > 0 {
 		return true, nil
 	}
-	// 2. 指定钥匙串兜底
+	// 2/3. 指定钥匙串兜底
 	keychains := []string{
 		expandHome(loginKeychain),            // ~/Library/Keychains/login.keychain-db
 		"/Library/Keychains/System.keychain", // 系统钥匙串
