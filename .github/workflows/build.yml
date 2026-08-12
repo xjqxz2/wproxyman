@@ -1,9 +1,14 @@
 # ============================================================================
-# WProxyman — build pipeline
+# WProxyman — build & release pipeline
 #
-# Builds the app on Windows / macOS (Intel + Apple Silicon) / Linux and
-# uploads the binaries. On version tags (v*) the binaries are attached to a
-# GitHub Release; on every push they are stored as workflow artifacts.
+# 每次 push 到 main：
+#   1. 三个原生 Runner 并行构建 Windows / macOS(Apple Silicon) / Linux；
+#   2. 构建产物上传为 Actions Artifacts；
+#   3. publish 任务（等全部构建成功）自动把产物发布到 GitHub Releases
+#      页面的 "Latest build"（预发布），覆盖更新，无需手动打 tag。
+#
+# 打 tag（v*）：
+#   额外发布一个正式 Release，产物同样挂在 Releases 页面。
 #
 # The Go engine is pure Go, but Wails needs native system libraries, so each
 # platform is built on its own native runner (cross-compiling is not
@@ -18,7 +23,7 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
-# Release 上传需要写权限（softprops/action-gh-release）。
+# Release / tag 操作需要写权限。
 permissions:
   contents: write
 
@@ -85,9 +90,76 @@ jobs:
             build/bin/*
           if-no-files-found: error
 
+      # 打 tag（v*）时：构建产物同时直接发布为正式 Release。
       - name: Attach binaries to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             build/bin/*
+
+  # ---------------------------------------------------------------------------
+  # 自动发布：push 到 main 构建成功后，把三平台产物发布到 Releases 页面的
+  # "Latest build"（预发布）。每次构建覆盖更新，无需手动打 tag。
+  # ---------------------------------------------------------------------------
+  publish:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # macOS 产物是 .app 目录，GitHub Release 只接受文件 → 打成 zip。
+      - name: Assemble release files
+        run: |
+          mkdir -p release
+          for f in artifacts/*/*; do
+            [ -e "$f" ] || continue
+            if [ -d "$f" ]; then
+              name="$(basename "$f")"
+              dir="$(dirname "$f")"
+              (cd "$dir" && zip -rq "$OLDPWD/release/${name}.zip" "$name")
+            else
+              cp "$f" release/
+            fi
+          done
+          ls -la release/
+
+      # 删除上一次的 "continuous" Release 与 tag，实现覆盖更新。
+      - name: Clean up previous continuous release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = 'continuous';
+            try {
+              const rels = await github.rest.repos.listReleases({ owner, repo, per_page: 100 });
+              for (const r of rels.data) {
+                if (r.tag_name === tag) {
+                  await github.rest.repos.deleteRelease({ owner, repo, release_id: r.id });
+                }
+              }
+            } catch (e) { console.log('clean release:', e.message); }
+            try {
+              await github.rest.git.deleteRef({ owner, repo, ref: `tags/${tag}` });
+            } catch (e) { console.log('clean tag:', e.message); }
+
+      # 发布最新的自动构建产物到 Releases 页面。
+      - name: Publish to Releases (auto)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: Latest build
+          body: |
+            自动构建产物（main 分支最新提交）
+
+            - Commit: `${{ github.sha }}`
+            - 构建时间: ${{ github.event.head_commit.timestamp }}
+
+            > 正式版本请打 tag 发布：`git tag v1.0.0 && git push origin v1.0.0`
+          files: release/*
+          prerelease: true
