@@ -56,14 +56,24 @@ func (platformTrustStore) Remove(caPath string) error {
 	return nil
 }
 
-// IsInstalled 检查 CA 证书是否已安装（登录钥匙串或系统钥匙串）。
-// 用户可能通过应用内安装（写入登录钥匙串），也可能通过系统钥匙串访问
-// 手动安装到系统钥匙串，两个位置都要检查。
+// IsInstalled 检查 CA 证书是否已安装（搜索全部钥匙串）。
+//
+// 注意：证书可能落在登录钥匙串、iCloud 钥匙串或系统钥匙串（取决于用户
+// 授权安装时的位置），因此优先使用不带 keychain 参数的
+// `security find-certificate -a -c CN`（搜索默认搜索列表，涵盖所有钥匙串），
+// 再以登录/系统钥匙串兜底。检测必须可靠——否则应用会误以为未安装而
+// 反复触发安装，导致每次启动都弹系统授权框。
 func (platformTrustStore) IsInstalled(caPath string) (bool, error) {
 	cn, err := commonNameFromFile(caPath)
 	if err != nil {
 		return false, err
 	}
+	// 1. 默认搜索列表（login / iCloud / system 等全部钥匙串）
+	out, err := exec.Command("security", "find-certificate", "-a", "-c", cn).CombinedOutput()
+	if err == nil && len(out) > 0 {
+		return true, nil
+	}
+	// 2. 指定钥匙串兜底
 	keychains := []string{
 		expandHome(loginKeychain),            // ~/Library/Keychains/login.keychain-db
 		"/Library/Keychains/System.keychain", // 系统钥匙串

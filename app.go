@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -153,17 +154,21 @@ func (a *App) startup(ctx context.Context) {
 			}
 		}
 	}
-	// Refresh the cached certificate-trust state, then attempt installation
-	// ASYNCHRONOUSLY — never block startup on the OS trust store (some
-	// systems hang on Root-store writes).
+	// Refresh the cached certificate-trust state.
 	a.refreshCertInstalled()
-	go func() {
-		if !a.certInstalled {
-			if err := a.InstallCertificate(); err != nil {
-				println("WProxyman: certificate auto-install failed:", err.Error())
+	// Windows：证书写入用户根存储无弹框，可静默自动安装。
+	// macOS / Linux：安装会触发系统授权（输入密码），若检测不可靠会每次
+	// 启动都弹框——改为由用户手动安装一次（设置 → Install Certificate），
+	// 装好后检测为已安装，之后启动不再触发任何授权。
+	if runtime.GOOS == "windows" {
+		go func() {
+			if !a.certInstalled {
+				if err := a.InstallCertificate(); err != nil {
+					println("WProxyman: certificate auto-install failed:", err.Error())
+				}
 			}
-		}
-	}()
+		}()
+	}
 	// 定时轮询证书信任状态：用户安装证书时（尤其 macOS 授权输入密码需要
 	// 时间，或通过应用外的方式安装）可能需要几十秒，轮询保证 UI 自动更新。
 	go a.watchCertStatus()

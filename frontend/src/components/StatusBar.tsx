@@ -15,19 +15,22 @@ export default function StatusBar() {
   const proxy = useApp((s) => s.proxy);
   const certInstalled = useApp((s) => s.certInstalled);
   const setCertInstalled = useApp((s) => s.setCertInstalled);
+  const setSettingsOpen = useApp((s) => s.setSettingsOpen);
   const flows = useFlows((s) => s.flows);
   const selectedId = useFlows((s) => s.selectedId);
 
   // 根据 selectedId 从流量列表中取出选中的那条流量（无选中时为 undefined）。
   const selected: Flow | undefined = selectedId ? flows.find((f) => f.id === selectedId) : undefined;
 
-  // 点击警告：立即向后端重新检测证书状态（安装授权可能刚完成）。
-  const recheckCert = async () => {
+  // 点击警告：先立即重新检测，仍未安装则打开设置面板引导手动安装
+  //（macOS/Linux 安装需用户授权，装好后检测为已安装，之后不再提示）。
+  const handleCertWarnClick = async () => {
     try {
       const ok = await api.isCertificateInstalled();
       setCertInstalled(ok);
+      if (!ok) setSettingsOpen(true);
     } catch {
-      /* ignore */
+      setSettingsOpen(true);
     }
   };
 
@@ -53,9 +56,9 @@ export default function StatusBar() {
         </span>
       </span>
 
-      {/* 证书未安装时的警告提示：点击可重新检测（安装授权可能刚完成）。 */}
+      {/* 证书未安装时的警告提示：点击重新检测；仍未安装则打开设置引导安装。 */}
       {!certInstalled && (
-        <span className="sb-item" style={{ color: 'var(--warn)', cursor: 'pointer' }} title={t('statusbar.installCertTitle')} onClick={recheckCert}>
+        <span className="sb-item" style={{ color: 'var(--warn)', cursor: 'pointer' }} title={t('statusbar.installCertTitle')} onClick={handleCertWarnClick}>
           <ShieldAlert size={12} />
           <span>{t('statusbar.httpsNotDecrypted')}</span>
         </span>
