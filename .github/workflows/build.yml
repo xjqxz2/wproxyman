@@ -130,13 +130,15 @@ jobs:
         run: |
           set -e
           BIN_NAME="wproxyman"
-          # 组装 AppDir 结构（.desktop + 图标 + 可执行文件）
+          # 组装 AppDir 结构。
+          # 注意：appimagetool 要求 .desktop 文件位于 AppDir 根目录，
+          # 而不是 usr/share/applications/ 子目录。
           mkdir -p AppDir/usr/bin \
                    AppDir/usr/share/applications \
                    AppDir/usr/share/icons/hicolor/256x256/apps
           cp build/bin/WProxyman AppDir/usr/bin/${BIN_NAME}
           cp build/appicon.png AppDir/usr/share/icons/hicolor/256x256/apps/${BIN_NAME}.png
-          cat > AppDir/usr/share/applications/${BIN_NAME}.desktop <<EOF
+          cat > AppDir/${BIN_NAME}.desktop <<EOF
           [Desktop Entry]
           Name=WProxyman
           Comment=HTTP/HTTPS debugging proxy
@@ -146,6 +148,7 @@ jobs:
           Type=Application
           Categories=Development;Utility;
           EOF
+          cp AppDir/${BIN_NAME}.desktop AppDir/usr/share/applications/
           # 下载 appimagetool（按架构），无 FUSE 环境用 --appimage-extract 运行
           if [ "${{ matrix.platform }}" = "linux/arm64" ]; then
             URL="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-aarch64.AppImage"
