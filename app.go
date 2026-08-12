@@ -164,6 +164,9 @@ func (a *App) startup(ctx context.Context) {
 			}
 		}
 	}()
+	// 定时轮询证书信任状态：用户安装证书时（尤其 macOS 授权输入密码需要
+	// 时间，或通过应用外的方式安装）可能需要几十秒，轮询保证 UI 自动更新。
+	go a.watchCertStatus()
 	a.emitProxyStatus()
 	wruntime.EventsEmit(a.ctx, "app:ready", map[string]interface{}{
 		"proxyRunning": a.proxySrv != nil && a.proxySrv.IsRunning(),
@@ -192,6 +195,25 @@ func (a *App) refreshCertInstalled() {
 	if a.ca != nil {
 		ok, _ := a.trustStore.IsInstalled(a.ca.CertFile())
 		a.certInstalled = ok
+	}
+}
+
+// watchCertStatus 周期性检查证书信任状态；状态变化时通知前端刷新界面。
+func (a *App) watchCertStatus() {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.stopPump:
+			return
+		case <-ticker.C:
+			before := a.certTrusted()
+			a.refreshCertInstalled()
+			after := a.certTrusted()
+			if before != after {
+				a.emit("cert:status", map[string]bool{"installed": after})
+			}
+		}
 	}
 }
 

@@ -4,6 +4,7 @@
 // 交互模块：store（useApp：代理/证书状态；useFlows：流量列表与选中 id）。
 import { Activity, Globe, ListFilter, ShieldAlert } from 'lucide-react';
 import { useApp, useFlows } from '../store';
+import { api } from '../services/api';
 import type { Flow } from '../types';
 import { useI18n } from '../i18n';
 
@@ -13,11 +14,22 @@ export default function StatusBar() {
   // 代理状态、证书是否已安装、全部流量与当前选中 id。
   const proxy = useApp((s) => s.proxy);
   const certInstalled = useApp((s) => s.certInstalled);
+  const setCertInstalled = useApp((s) => s.setCertInstalled);
   const flows = useFlows((s) => s.flows);
   const selectedId = useFlows((s) => s.selectedId);
 
   // 根据 selectedId 从流量列表中取出选中的那条流量（无选中时为 undefined）。
   const selected: Flow | undefined = selectedId ? flows.find((f) => f.id === selectedId) : undefined;
+
+  // 点击警告：立即向后端重新检测证书状态（安装授权可能刚完成）。
+  const recheckCert = async () => {
+    try {
+      const ok = await api.isCertificateInstalled();
+      setCertInstalled(ok);
+    } catch {
+      /* ignore */
+    }
+  };
 
   return (
     <div className="statusbar">
@@ -41,9 +53,9 @@ export default function StatusBar() {
         </span>
       </span>
 
-      {/* 证书未安装时的警告提示：点击可安装证书以解密 HTTPS 流量。 */}
+      {/* 证书未安装时的警告提示：点击可重新检测（安装授权可能刚完成）。 */}
       {!certInstalled && (
-        <span className="sb-item" style={{ color: 'var(--warn)', cursor: 'pointer' }} title={t('statusbar.installCertTitle')}>
+        <span className="sb-item" style={{ color: 'var(--warn)', cursor: 'pointer' }} title={t('statusbar.installCertTitle')} onClick={recheckCert}>
           <ShieldAlert size={12} />
           <span>{t('statusbar.httpsNotDecrypted')}</span>
         </span>

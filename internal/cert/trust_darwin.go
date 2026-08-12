@@ -56,18 +56,25 @@ func (platformTrustStore) Remove(caPath string) error {
 	return nil
 }
 
-// IsInstalled 检查 CA 证书是否存在于登录钥匙串中。
+// IsInstalled 检查 CA 证书是否已安装（登录钥匙串或系统钥匙串）。
+// 用户可能通过应用内安装（写入登录钥匙串），也可能通过系统钥匙串访问
+// 手动安装到系统钥匙串，两个位置都要检查。
 func (platformTrustStore) IsInstalled(caPath string) (bool, error) {
 	cn, err := commonNameFromFile(caPath)
 	if err != nil {
 		return false, err
 	}
-	homeKeychain := expandHome(loginKeychain)
-	out, err := exec.Command("security", "find-certificate", "-c", cn, homeKeychain).CombinedOutput()
-	if err != nil {
-		return false, nil // 找不到证书视为未安装
+	keychains := []string{
+		expandHome(loginKeychain),            // ~/Library/Keychains/login.keychain-db
+		"/Library/Keychains/System.keychain", // 系统钥匙串
 	}
-	return len(out) > 0, nil
+	for _, kc := range keychains {
+		out, err := exec.Command("security", "find-certificate", "-c", cn, kc).CombinedOutput()
+		if err == nil && len(out) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // expandHome 展开路径中的 ~/ 前缀为实际的家目录路径。
