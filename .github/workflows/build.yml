@@ -50,13 +50,7 @@ jobs:
             artifact: wproxyman-linux-amd64
             asset: WProxyman_linux_amd64.AppImage
             isWindows: "false"
-
-          # --- Linux：arm64（GitHub ARM runner；需 22.04 才有 webkit2gtk-4.0）---
-          - os: ubuntu-22.04-arm
-            platform: linux/arm64
-            artifact: wproxyman-linux-arm64
-            asset: WProxyman_linux_arm64.AppImage
-            isWindows: "false"
+          # 注：Linux arm64 暂不发布（webkit2gtk-4.0 依赖在 ARM 源上不稳定）
 
     runs-on: ${{ matrix.os }}
 
@@ -238,7 +232,6 @@ jobs:
             | Windows | ARM64 | WProxyman_windows_arm64.exe |
             | macOS | Apple Silicon | WProxyman_darwin_arm64.dmg |
             | Linux | x64 | WProxyman_linux_amd64.AppImage |
-            | Linux | ARM64 | WProxyman_linux_arm64.AppImage |
 
             > **macOS 首次打开说明**：应用未通过 Apple 公证（notarization），
             > macOS Gatekeeper 会提示"无法打开/无法验证开发者"。请任选其一：

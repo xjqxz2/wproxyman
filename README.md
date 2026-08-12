@@ -95,7 +95,8 @@ GitHub Actions（`.github/workflows/build.yml`）在每次推送时并行构建�
 | Windows | ARM64 | `WProxyman_windows_arm64.exe`（交叉编译） |
 | macOS | Apple Silicon | `WProxyman_darwin_arm64.dmg` |
 | Linux | x64 | `WProxyman_linux_amd64.AppImage` |
-| Linux | ARM64 | `WProxyman_linux_arm64.AppImage` |
+
+（Linux ARM64 暂不发布；其他架构可在本机执行 `make` 构建）
 
 - **push 到 `main`**：构建产物自动发布到 **Releases** 页面的 *Latest build*（预发布，每次覆盖更新），无需手动操作；
 - **打 tag（如 `v1.0.0`）**：自动发布**正式 Release**。
