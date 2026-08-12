@@ -87,14 +87,20 @@ build/bin/
 
 ## 🔄 CI 与 Release
 
-GitHub Actions（`.github/workflows/build.yml`）在每次推送时于三个原生
-Runner 上并行构建 Windows / macOS（Apple Silicon）/ Linux：
+GitHub Actions（`.github/workflows/build.yml`）在每次推送时并行构建全平台矩阵：
 
-- **push 到 `main`**：构建产物保存为 **Actions Artifacts**；
-- **打 tag（如 `v1.0.0`）**：自动发布到 **GitHub Release**，各平台的安装包
-  直接挂在 Release 页面下载。
-- 注：GitHub 已下线 Intel macOS 公共 Runner，macOS 产物为 Apple Silicon
-  架构；Intel Mac 用户可在本机执行 `make` 构建。
+| 平台 | 架构 | 产物 |
+|---|---|---|
+| Windows | x64 | `WProxyman_windows_amd64.exe` |
+| Windows | ARM64 | `WProxyman_windows_arm64.exe`（交叉编译） |
+| macOS | Apple Silicon | `WProxyman_darwin_arm64.dmg` |
+| Linux | x64 | `WProxyman_linux_amd64.AppImage` |
+| Linux | ARM64 | `WProxyman_linux_arm64.AppImage` |
+
+- **push 到 `main`**：构建产物自动发布到 **Releases** 页面的 *Latest build*（预发布，每次覆盖更新），无需手动操作；
+- **打 tag（如 `v1.0.0`）**：自动发布**正式 Release**。
+- 注：GitHub 已下线 Intel macOS 公共 Runner，macOS 仅云上构建 Apple Silicon；
+  Intel Mac / 其他架构用户可在本机执行 `make` 构建。
 
 ```bash
 git tag v1.0.0 && git push origin v1.0.0
