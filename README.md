@@ -102,6 +102,16 @@ GitHub Actions（`.github/workflows/build.yml`）在每次推送时并行构建�
 - 注：GitHub 已下线 Intel macOS 公共 Runner，macOS 仅云上构建 Apple Silicon；
   Intel Mac / 其他架构用户可在本机执行 `make` 构建。
 
+> **macOS 首次打开**：应用未通过 Apple 公证（notarization），macOS Gatekeeper
+> 会提示"无法打开/无法验证开发者"。解决方式（任选其一）：
+>
+> 1. 右键（或按住 Control）点击 `WProxyman.app` → 选择**打开**；
+> 2. 终端执行：`xattr -d com.apple.quarantine /Applications/WProxyman.app`；
+> 3. 系统设置 → 隐私与安全性 → **仍要打开**。
+>
+> 要彻底消除提示（与商业软件一致），需要配置 Apple Developer ID 证书并在
+> CI 中执行公证（notarization），详见 [notarytool 文档](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution)。
+
 ```bash
 git tag v1.0.0 && git push origin v1.0.0
 ```

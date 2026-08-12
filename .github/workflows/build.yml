@@ -106,11 +106,14 @@ jobs:
           wails build -platform windows/arm64
           Move-Item build/bin/WProxyman.exe WProxyman_windows_arm64.exe -Force
 
-      # --- macOS：构建 .app 后用 hdiutil 打成 dmg ---
+      # --- macOS：构建 .app，ad-hoc 签名后用 hdiutil 打成 dmg ---
+      # 注意：ad-hoc 签名只能保证应用本地完整性；macOS Gatekeeper 仍会
+      # 拦截未公证（notarized）的应用，首次打开请见 Release 说明。
       - name: Build macOS
         if: runner.os == 'macOS'
         run: |
           wails build -platform darwin/arm64
+          codesign --force --deep --sign - build/bin/WProxyman.app
           hdiutil create \
             -volname WProxyman \
             -srcfolder build/bin/WProxyman.app \
@@ -231,6 +234,13 @@ jobs:
             | macOS | Apple Silicon | WProxyman_darwin_arm64.dmg |
             | Linux | x64 | WProxyman_linux_amd64.AppImage |
             | Linux | ARM64 | WProxyman_linux_arm64.AppImage |
+
+            > **macOS 首次打开说明**：应用未通过 Apple 公证（notarization），
+            > macOS Gatekeeper 会提示"无法打开/无法验证开发者"。请任选其一：
+            > 1. 右键（或按住 Control）点击 WProxyman.app → 选择「打开」；
+            > 2. 终端执行：`xattr -d com.apple.quarantine /Applications/WProxyman.app`；
+            > 3. 系统设置 → 隐私与安全性 → 「仍要打开」。
+            > 正式无提示分发需配置 Apple Developer ID 证书 + 公证。
 
             > 正式版本请打 tag 发布：`git tag v1.0.0 && git push origin v1.0.0`
           files: release/*
