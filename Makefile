@@ -67,6 +67,10 @@ clean:
 doctor: check-tools
 	@wails doctor
 
+# macOS：本地 ad-hoc 打包（生成 WProxyman_darwin_<arch>.dmg，个人自用）
+dmg:
+	@bash scripts/build-macos.sh
+
 tidy:
 	@$(GO) mod tidy
 

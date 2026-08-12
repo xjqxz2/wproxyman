@@ -114,11 +114,16 @@ jobs:
         run: |
           wails build -platform darwin/arm64
           codesign --force --deep --sign - build/bin/WProxyman.app
+          # 组装 dmg 内容：.app + Applications 快捷方式（拖拽安装体验）
+          DMG_STAGE="$(mktemp -d)"
+          cp -R build/bin/WProxyman.app "$DMG_STAGE/"
+          ln -s /Applications "$DMG_STAGE/Applications"
           hdiutil create \
             -volname WProxyman \
-            -srcfolder build/bin/WProxyman.app \
+            -srcfolder "$DMG_STAGE" \
             -ov -format UDZO \
             WProxyman_darwin_arm64.dmg
+          rm -rf "$DMG_STAGE"
 
       # --- Linux：构建二进制后手动打包为 AppImage ---
       - name: Build Linux
