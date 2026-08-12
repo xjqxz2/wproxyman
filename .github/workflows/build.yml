@@ -31,9 +31,9 @@ jobs:
           - os: windows-latest
             platform: windows/amd64
             artifact: wproxyman-windows-amd64
-          - os: macos-13
-            platform: darwin/amd64
-            artifact: wproxyman-macos-amd64
+          # 注意：GitHub 已下线 Intel macOS 公共 runner（macos-13），
+          # 云上只提供 Apple Silicon（macos-14/15，arm64）。Intel Mac
+          # 用户可在本机执行 `make` 构建。
           - os: macos-14
             platform: darwin/arm64
             artifact: wproxyman-macos-arm64

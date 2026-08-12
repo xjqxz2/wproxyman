@@ -87,12 +87,14 @@ build/bin/
 
 ## 🔄 CI 与 Release
 
-GitHub Actions（`.github/workflows/build.yml`）在每次推送时于四个原生
-Runner 上并行构建 Windows / macOS（Intel + Apple Silicon）/ Linux：
+GitHub Actions（`.github/workflows/build.yml`）在每次推送时于三个原生
+Runner 上并行构建 Windows / macOS（Apple Silicon）/ Linux：
 
 - **push 到 `main`**：构建产物保存为 **Actions Artifacts**；
-- **打 tag（如 `v1.0.0`）**：自动发布到 **GitHub Release**，四个平台的安装包
+- **打 tag（如 `v1.0.0`）**：自动发布到 **GitHub Release**，各平台的安装包
   直接挂在 Release 页面下载。
+- 注：GitHub 已下线 Intel macOS 公共 Runner，macOS 产物为 Apple Silicon
+  架构；Intel Mac 用户可在本机执行 `make` 构建。
 
 ```bash
 git tag v1.0.0 && git push origin v1.0.0
