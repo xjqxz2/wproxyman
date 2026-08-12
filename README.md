@@ -42,7 +42,7 @@
 - Node.js 20+
 - Wails CLI（构建脚本会自动安装）
 - macOS：Xcode Command Line Tools
-- Linux：`libgtk-3-dev`、`libwebkit2gtk-4.1-dev` 等（脚本会检测并提示）
+- Linux：`libgtk-3-dev`、`libwebkit2gtk-4.0-dev` 等（脚本会检测并提示）
 
 ### Windows
 
