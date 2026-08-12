@@ -47,20 +47,36 @@
 ### Windows
 
 ```bat
-make.bat          :: 构建（产物 build\bin\WProxyman.exe）
+make.bat          :: 构建 + 冒烟测试（产物 build\bin\WProxyman.exe）
+make.bat smoke    :: 仅运行冒烟测试（需已构建）
 make.bat dev      :: 开发模式（热重载）
-make.bat test     :: 运行测试
+make.bat test     :: 运行单元测试
 make.bat clean    :: 清理
 ```
 
 ### macOS / Linux
 
 ```sh
-make              # 构建（产物 build/bin/WProxyman(.app)）
+make              # 构建 + 冒烟测试（产物 build/bin/WProxyman(.app)）
+make smoke        # 仅运行冒烟测试
 make dev          # 开发模式
-make test         # 运行测试
+make test         # 运行单元测试
+make dmg          # macOS 本地 ad-hoc 打包
 make clean        # 清理
 ```
+
+### 冒烟测试
+
+构建完成后自动执行（`scripts/smoke-test.ps1` / `scripts/smoke-test.sh`），
+真实启动应用并验证：
+
+1. 产物存在且非空；
+2. 应用自动开启系统代理（等待端口就绪）；
+3. 通过代理发送 HTTP 请求（期望 200）；
+4. 通过代理发送 HTTPS 请求（期望 200）；
+5. 关闭应用后系统代理被自动清理。
+
+任一步失败则构建视为失败（退出非零）。
 
 ### 构建产物
 

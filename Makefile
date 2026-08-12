@@ -18,7 +18,7 @@ APP_NAME := WProxyman
 GO       ?= go
 NPM      ?= npm
 
-.PHONY: all build dev test test-go test-frontend deps deps-go deps-frontend clean doctor tidy check-tools
+.PHONY: all build dev smoke test test-go test-frontend deps deps-go deps-frontend clean doctor tidy check-tools
 
 all: build
 
@@ -27,7 +27,12 @@ all: build
 build: check-tools deps-frontend
 	@echo "==> Building $(APP_NAME) (production)"
 	@wails build
-	@echo "==> Done. Binary: build/bin/$(APP_NAME)"
+	@echo "==> Running smoke test"
+	@bash scripts/smoke-test.sh
+
+# 单独运行冒烟测试（需先构建）
+smoke:
+	@bash scripts/smoke-test.sh
 
 # --- dev ---------------------------------------------------------------------
 

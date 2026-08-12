@@ -16,12 +16,13 @@ if "%1"=="" goto build
 if "%1"=="build" goto build
 if "%1"=="dev" goto dev
 if "%1"=="test" goto test
+if "%1"=="smoke" goto smoke
 if "%1"=="deps" goto deps
 if "%1"=="clean" goto clean
 if "%1"=="doctor" goto doctor
 if "%1"=="tidy" goto tidy
 echo Unknown target: %1
-echo Usage: make.bat [build^|dev^|test^|deps^|clean^|doctor^|tidy]
+echo Usage: make.bat [build^|dev^|test^|smoke^|deps^|clean^|doctor^|tidy]
 exit /b 1
 
 rem ----------------------------------------------------------------------------
@@ -66,6 +67,9 @@ popd
 echo ==^> Building %APP_NAME% (production)
 call wails build
 if errorlevel 1 exit /b 1
+echo ==^> Running smoke test
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\smoke-test.ps1"
+if errorlevel 1 exit /b 1
 echo ==^> Done. Binary: build\bin\%APP_NAME%.exe
 exit /b 0
 
@@ -92,6 +96,13 @@ set TSC_RC=%errorlevel%
 popd
 if not "%TSC_RC%"=="0" exit /b %TSC_RC%
 exit /b 0
+
+rem ----------------------------------------------------------------------------
+rem  smoke
+rem ----------------------------------------------------------------------------
+:smoke
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\smoke-test.ps1"
+exit /b %errorlevel%
 
 rem ----------------------------------------------------------------------------
 rem  deps
