@@ -308,6 +308,7 @@ body,
   user-select: none;
 }
 .ft-header .ft-col {
+  position: relative;
   padding: 0 8px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -316,6 +317,21 @@ body,
 }
 .ft-header .ft-col:hover {
   color: var(--text-primary);
+}
+/* 列宽拖拽手柄：绝对定位于单元格右缘，悬停/拖拽时高亮。 */
+.ft-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+.ft-resize:hover,
+.ft-resize.active {
+  background: var(--accent);
 }
 
 .ft-row {

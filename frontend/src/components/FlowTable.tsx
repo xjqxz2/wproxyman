@@ -34,27 +34,37 @@ import { useI18n } from '../i18n';
 const ROW_HEIGHT = 30;
 
 // ColumnDef — 表格列定义：key（标识）、label（表头文字）、
-// width（固定像素宽）或 flex（弹性占比）、sortable（是否可排序）。
+// width（固定像素宽）或 flex（弹性占比）、minWidth（拖拽调整时的最小像素宽下限）、
+// defaultWidth（弹性列首次被拖拽时的兜底像素宽，实际以当前计算宽度为准）、
+// sortable（是否可排序）。
 interface ColumnDef {
   key: string;
   label: string;
   width?: number;
   flex?: number;
+  minWidth: number;
+  defaultWidth?: number;
   sortable?: boolean;
 }
+
+// MAX_COL_WIDTH — 拖拽调整列宽时的最大像素宽上限。
+const MAX_COL_WIDTH = 600;
 
 // COLUMNS — 表格列配置：序号、方法（可排序）、主机（弹性）、路径（弹性）、
 // 状态（可排序）、大小、耗时、时间。
 const COLUMNS: ColumnDef[] = [
-  { key: 'index', label: '#', width: 36 },
-  { key: 'method', label: 'Method', width: 74, sortable: true },
-  { key: 'host', label: 'Host', flex: 1.2 },
-  { key: 'path', label: 'Path', flex: 1.8 },
-  { key: 'status', label: 'Status', width: 56, sortable: true },
-  { key: 'size', label: 'Size', width: 70 },
-  { key: 'duration', label: 'Duration', width: 70 },
-  { key: 'time', label: 'Time', width: 76 },
+  { key: 'index', label: '#', width: 36, minWidth: 36 },
+  { key: 'method', label: 'Method', width: 74, minWidth: 56, sortable: true },
+  { key: 'host', label: 'Host', flex: 1.2, minWidth: 110, defaultWidth: 180 },
+  { key: 'path', label: 'Path', flex: 1.8, minWidth: 120, defaultWidth: 260 },
+  { key: 'status', label: 'Status', width: 56, minWidth: 50, sortable: true },
+  { key: 'size', label: 'Size', width: 70, minWidth: 60 },
+  { key: 'duration', label: 'Duration', width: 70, minWidth: 60 },
+  { key: 'time', label: 'Time', width: 76, minWidth: 70 },
 ];
+
+// COLUMN_BY_KEY — 列 key → 列定义的查找表（行单元格按 key 取列配置）。
+const COLUMN_BY_KEY = new Map(COLUMNS.map((c) => [c.key, c]));
 
 // METHOD_COLORS — 有专属配色的 HTTP 方法列表，其余方法统一用 method-other 样式。
 const METHOD_COLORS = ['get', 'post', 'put', 'delete', 'patch'];
@@ -100,10 +110,17 @@ export default function FlowTable() {
   // 本地状态：当前排序（方法或状态码 + 升降序）、右键菜单位置（坐标 + 流量 id）。
   const [sort, setSort] = useState<{ key: 'method' | 'status'; asc: boolean }>({ key: 'method', asc: true });
   const [menu, setMenu] = useState<{ x: number; y: number; flowId: string } | null>(null);
+  // 列宽状态：仅包含用户手动拖拽过的列（key → 像素宽，覆盖默认 width/flex）。
+  const [colWidths, setColWidths] = useState<Record<string, number>>({});
+  // 正在拖拽调整宽度的列 key（用于手柄 .active 高亮）。
+  const [resizing, setResizing] = useState<string | null>(null);
   // 滚动容器引用、是否接近底部标记、上一次行数（用于判断是否有新行到来）。
   const parentRef = useRef<HTMLDivElement>(null);
   const nearBottomRef = useRef(true);
   const prevLenRef = useRef(0);
+  // 拖拽结束的清理函数（组件卸载时兜底调用）与点击抑制标记（拖拽后忽略随后 click，避免误触发排序）。
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
+  const suppressClickRef = useRef(false);
 
   // 计算筛选 + 排序后的行。注意先拷贝再排序：filterFlows 在无筛选条件时
   // 可能直接返回 store 数组引用，直接 sort 会污染 store 数据。
@@ -139,6 +156,9 @@ export default function FlowTable() {
     }
     prevLenRef.current = rows.length;
   }, [rows.length, rowVirtualizer]);
+
+  // 组件卸载时清理可能残留的列宽拖拽监听。
+  useEffect(() => () => resizeCleanupRef.current?.(), []);
 
   // handleScroll — 滚动事件处理：实时判断用户是否接近列表底部
   //（距底部不足 200px 视为"接近底部"，用于决定是否自动跟随新流量）。
@@ -215,9 +235,51 @@ export default function FlowTable() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, menu]);
 
-  // headerCellStyle — 计算列头样式：定宽列用 width + flexShrink:0，弹性列用 flex 占比。
-  const headerCellStyle = (col: ColumnDef): React.CSSProperties =>
-    col.width !== undefined ? { width: col.width, flexShrink: 0 } : { flex: col.flex, minWidth: 0 };
+  // cellStyle — 计算单元格样式（表头与行单元格通用）：
+  // 用户拖拽过的列 → 固定像素宽（flexShrink:0，覆盖默认 width/flex）；
+  // 定宽列 → width + flexShrink:0；其余弹性列 → flex 占比。
+  const cellStyle = (col: ColumnDef): React.CSSProperties => {
+    const w = colWidths[col.key];
+    if (w !== undefined) return { width: w, flexShrink: 0 };
+    if (col.width !== undefined) return { width: col.width, flexShrink: 0 };
+    return { flex: col.flex, minWidth: 0 };
+  };
+
+  // handleResizeStart — 列宽拖拽开始：记录起始 X 与起始像素宽，挂载 window 级
+  // pointermove/pointerup 监听，拖拽期间禁用文本选择与自定义光标。
+  // 弹性列（host/path）首次被拖拽时，以当前实际渲染像素宽作为种子写入 colWidths，
+  // 此后该列转为固定像素宽（flexShrink:0）。宽度被 clamp 在 [minWidth, MAX_COL_WIDTH]。
+  const handleResizeStart = (e: React.PointerEvent<HTMLDivElement>, col: ColumnDef) => {
+    e.preventDefault();
+    e.stopPropagation();
+    suppressClickRef.current = true;
+    const cellEl = e.currentTarget.parentElement as HTMLElement | null;
+    const startX = e.clientX;
+    const recorded = colWidths[col.key];
+    const measured = cellEl ? Math.round(cellEl.getBoundingClientRect().width) : 0;
+    const startWidth = recorded ?? (measured > 0 ? measured : col.defaultWidth ?? col.minWidth);
+    if (recorded === undefined) {
+      setColWidths((prev) => ({ ...prev, [col.key]: startWidth }));
+    }
+    setResizing(col.key);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    const onMove = (ev: PointerEvent) => {
+      const next = Math.min(MAX_COL_WIDTH, Math.max(col.minWidth, startWidth + (ev.clientX - startX)));
+      setColWidths((prev) => ({ ...prev, [col.key]: next }));
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      setResizing(null);
+      resizeCleanupRef.current = null;
+    };
+    resizeCleanupRef.current = onUp;
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
 
   return (
     <div className="table-wrap">
@@ -245,14 +307,21 @@ export default function FlowTable() {
           </div>
         ) : (
           <>
-            {/* 表头：可排序列点击切换排序，并显示升降序箭头。 */}
+            {/* 表头：可排序列点击切换排序，并显示升降序箭头；右缘带列宽拖拽手柄。 */}
             <div className="ft-header">
               {COLUMNS.map((col) => (
                 <div
                   key={col.key}
                   className="ft-col"
-                  style={headerCellStyle(col)}
-                  onClick={col.sortable ? () => toggleSort(col.key as 'method' | 'status') : undefined}
+                  style={cellStyle(col)}
+                  onClick={(e) => {
+                    // 拖拽结束后紧随的 click 不触发排序。
+                    if (suppressClickRef.current) {
+                      suppressClickRef.current = false;
+                      return;
+                    }
+                    if (col.sortable) toggleSort(col.key as 'method' | 'status');
+                  }}
                 >
                   {t(`flowtable.${col.key}`)}
                   {col.sortable && sort.key === col.key && (
@@ -260,6 +329,13 @@ export default function FlowTable() {
                       {sort.asc ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
                     </span>
                   )}
+                  {/* 列宽拖拽手柄：停靠在单元格右缘，pointerdown/click 均不冒泡以免触发排序。 */}
+                  <div
+                    className={`ft-resize${resizing === col.key ? ' active' : ''}`}
+                    data-resize-key={col.key}
+                    onPointerDown={(e) => handleResizeStart(e, col)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
                 </div>
               ))}
             </div>
@@ -298,13 +374,13 @@ export default function FlowTable() {
                     aria-selected={isSelected}
                   >
                     {/* 序号列：展示 TLS 锁图标 / 置顶图标 / 错误警示图标。 */}
-                    <div className="ft-col" style={{ width: 36, padding: '0 4px', overflow: 'visible', display: 'flex', alignItems: 'center', gap: 2 }}>
+                    <div className="ft-col" style={{ ...cellStyle(COLUMN_BY_KEY.get('index')!), padding: '0 4px', overflow: 'visible', display: 'flex', alignItems: 'center', gap: 2 }}>
                       {flow.tls ? <Lock size={13} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} /> : <Globe size={13} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />}
                       {flow.isPinned && <Pin size={12} style={{ color: 'var(--warn)', flexShrink: 0 }} />}
                       {flow.error && <AlertTriangle size={12} style={{ color: 'var(--error)', flexShrink: 0 }} />}
                     </div>
                     {/* 方法列：按方法着色，WebSocket 流量追加 WS 标签。 */}
-                    <div className={`ft-col method ${methodClass(flow.method)}`} style={{ width: 74 }}>
+                    <div className={`ft-col method ${methodClass(flow.method)}`} style={cellStyle(COLUMN_BY_KEY.get('method')!)}>
                       {flow.method}
                       {flow.isWebSocket && (
                         <span className="tag green" style={{ marginLeft: 4, padding: '0 5px', fontSize: 10 }}>
@@ -313,26 +389,26 @@ export default function FlowTable() {
                       )}
                     </div>
                     {/* 主机列（hover 显示完整主机名）。 */}
-                    <div className="ft-col host" style={{ flex: 1.2, minWidth: 0 }} title={flow.host}>
+                    <div className="ft-col host" style={cellStyle(COLUMN_BY_KEY.get('host')!)} title={flow.host}>
                       {flow.host}
                     </div>
                     {/* 路径列：路径 + 查询串（hover 显示完整 URL）。 */}
-                    <div className="ft-col path" style={{ flex: 1.8, minWidth: 0 }} title={flow.fullUrl}>
+                    <div className="ft-col path" style={cellStyle(COLUMN_BY_KEY.get('path')!)} title={flow.fullUrl}>
                       {flow.path}
                       {flow.query && <span style={{ color: 'var(--text-tertiary)' }}>{queryText(flow)}</span>}
                     </div>
                     {/* 状态列：按百位分组着色，未响应时显示破折号。 */}
-                    <div className={`ft-col status ${statusClass(flow.responseStatus)}`} style={{ width: 56 }}>
+                    <div className={`ft-col status ${statusClass(flow.responseStatus)}`} style={cellStyle(COLUMN_BY_KEY.get('status')!)}>
                       {flow.responseStatus > 0 ? flow.responseStatus : '—'}
                     </div>
                     {/* 大小 / 耗时 / 时间列：使用格式化工具展示。 */}
-                    <div className="ft-col" style={{ width: 70 }}>
+                    <div className="ft-col" style={cellStyle(COLUMN_BY_KEY.get('size')!)}>
                       {formatBytes(flow.responseSize)}
                     </div>
-                    <div className="ft-col time" style={{ width: 70 }}>
+                    <div className="ft-col time" style={cellStyle(COLUMN_BY_KEY.get('duration')!)}>
                       {formatDuration(flow.duration)}
                     </div>
-                    <div className="ft-col time" style={{ width: 76 }}>
+                    <div className="ft-col time" style={cellStyle(COLUMN_BY_KEY.get('time')!)}>
                       {formatTime(flow.startedAt)}
                     </div>
                   </div>
