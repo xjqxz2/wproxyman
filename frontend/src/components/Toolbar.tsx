@@ -8,6 +8,7 @@ import { Lock, Pause, Pin, Play, Search, Settings, Trash2, Turtle } from 'lucide
 import { useApp, useFlows } from '../store';
 import { api } from '../services/api';
 import { useI18n } from '../i18n';
+import { WindowToggleMaximise } from '../../wailsjs/runtime/runtime';
 
 // Toolbar — 顶部工具栏组件（无 props、无对外状态，全部读写全局 store）。
 export default function Toolbar() {
@@ -72,8 +73,18 @@ const setSettingsOpen = useApp((s) => s.setSettingsOpen);
     }
   };
 
+  // onToolbarDoubleClick — macOS 隐藏标题栏后，系统自带的双击放大/还原
+  // 不再生效（Wails 拖拽机制拦截了原生双击）。在工具栏空白处双击时
+  // 手动触发窗口最大化切换，补回原生行为。交互控件上的双击不拦截。
+  const onToolbarDoubleClick = (e: React.MouseEvent) => {
+    const target = e.target as HTMLElement;
+    // 点击在按钮/搜索框等交互元素上时不触发最大化（由元素自身处理）。
+    if (target.closest('.tb-btn, .tb-search, .tb-sep')) return;
+    WindowToggleMaximise();
+  };
+
   return (
-    <div className="toolbar">
+    <div className="toolbar" onDoubleClick={onToolbarDoubleClick}>
       {/* 捕获开关：运行中显示 Pause（暂停），停止时显示 Play（开始）。 */}
       <button
         type="button"

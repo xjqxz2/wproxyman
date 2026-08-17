@@ -22,10 +22,11 @@
     </radialGradient>
   </defs>
 
-  <!-- 背景圆角方块（rx=56；mac 用满幅版，linux/win 用本圆角版） -->
-  <rect x="0" y="0" width="256" height="256" rx="56" fill="url(#bg)"/>
+  <!-- 背景圆角方块（内缩留边距，符合 macOS 图标规范：内容不贴画布边缘；
+       mac/linux/win 通用圆角版，四角透明由各平台遮罩或素材本身处理） -->
+  <rect x="15" y="15" width="226" height="226" rx="50" fill="url(#bg)"/>
   <!-- 顶部内描边高光 -->
-  <rect x="7" y="7" width="242" height="242" rx="49" fill="none" stroke="rgba(255,255,255,0.30)" stroke-width="2"/>
+  <rect x="22" y="22" width="212" height="212" rx="43" fill="none" stroke="rgba(255,255,255,0.30)" stroke-width="2"/>
 
   <!-- W（三峰，渐变描边，内容整体居中） -->
   <path d="M 62 88 L 78 154 L 94 106 L 110 154 L 126 88"
