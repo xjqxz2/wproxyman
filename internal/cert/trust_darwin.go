@@ -24,27 +24,26 @@ type platformTrustStore struct{}
 // loginKeychain 是用户登录钥匙串的默认路径。
 const loginKeychain = "~/Library/Keychains/login.keychain-db"
 
-// Install 将 CA 证书安装为 macOS 系统级受信任根证书。
+// Install 将 CA 证书安装为受信任根证书（用户级信任，无需管理员授权）。
 //
-// 优先写入系统钥匙串（Safari / Chrome / 所有浏览器都认系统级信任）；
-// 写入系统钥匙串需要管理员授权（首次弹一次密码框，之后证书已存在不再弹）。
-// 若系统钥匙串写入失败，回退到登录钥匙串（当前用户级信任）。
+// 关键：使用**不带 -d** 的 add-trusted-cert —— 信任设置写入当前用户的
+// user domain，对当前用户的所有浏览器（Safari/Chrome/Edge）都生效，
+// 且不会触发管理员授权弹框。-d（admin domain）需要 root 授权，授权
+// 环节经常失败导致信任设置根本没写进去（浏览器仍提示证书不安全）。
 func (platformTrustStore) Install(caPath string) error {
-	// 1. 系统钥匙串（系统级信任，浏览器通用）
-	sysKc := "/Library/Keychains/System.keychain"
+	// 1. 登录钥匙串 + 用户级信任（无授权弹框）
+	kc := expandHome(loginKeychain)
 	_, err := exec.Command("security",
-		"add-trusted-cert", "-d", "-r", "trustRoot",
-		"-k", sysKc, caPath).CombinedOutput()
+		"add-trusted-cert", "-r", "trustRoot",
+		"-k", kc, caPath).CombinedOutput()
 	if err == nil {
 		return nil
 	}
-	// 2. 回退：登录钥匙串（当前用户级信任）
-	kc := expandHome(loginKeychain)
+	// 2. 兜底：不带 -k（默认钥匙串）
 	out2, err2 := exec.Command("security",
-		"add-trusted-cert", "-d", "-r", "trustRoot",
-		"-k", kc, caPath).CombinedOutput()
+		"add-trusted-cert", "-r", "trustRoot", caPath).CombinedOutput()
 	if err2 != nil {
-		return fmt.Errorf("security add-trusted-cert failed (system & login): %v: %s",
+		return fmt.Errorf("security add-trusted-cert failed: %v: %s",
 			err2, strings.TrimSpace(string(out2)))
 	}
 	return nil
