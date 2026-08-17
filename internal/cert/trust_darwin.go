@@ -26,25 +26,25 @@ const loginKeychain = "~/Library/Keychains/login.keychain-db"
 
 // Install 将 CA 证书安装为受信任根证书（用户级信任，无需管理员授权）。
 //
-// 关键：使用**不带 -d** 的 add-trusted-cert —— 信任设置写入当前用户的
-// user domain，对当前用户的所有浏览器（Safari/Chrome/Edge）都生效，
-// 且不会触发管理员授权弹框。-d（admin domain）需要 root 授权，授权
-// 环节经常失败导致信任设置根本没写进去（浏览器仍提示证书不安全）。
+// 关键：
+//   - 使用**不带 -d** 的 add-trusted-cert —— 信任设置写入当前用户的
+//     user domain，对当前用户的所有浏览器生效，且不触发管理员授权。
+//   - 显式指定 `-p ssl`（SSL 策略）确保浏览器对 HTTPS 流量直接信任；
+//   - 命令返回 0 即信任设置已写入（可随后用 `security dump-trust-settings`
+//     验证，会看到 WProxyman CA 条目）。
 func (platformTrustStore) Install(caPath string) error {
-	// 1. 登录钥匙串 + 用户级信任（无授权弹框）
 	kc := expandHome(loginKeychain)
 	_, err := exec.Command("security",
-		"add-trusted-cert", "-r", "trustRoot",
+		"add-trusted-cert", "-r", "trustRoot", "-p", "ssl",
 		"-k", kc, caPath).CombinedOutput()
-	if err == nil {
-		return nil
-	}
-	// 2. 兜底：不带 -k（默认钥匙串）
-	out2, err2 := exec.Command("security",
-		"add-trusted-cert", "-r", "trustRoot", caPath).CombinedOutput()
-	if err2 != nil {
-		return fmt.Errorf("security add-trusted-cert failed: %v: %s",
-			err2, strings.TrimSpace(string(out2)))
+	if err != nil {
+		// 兜底：不带 -k（默认钥匙串）
+		out2, err2 := exec.Command("security",
+			"add-trusted-cert", "-r", "trustRoot", "-p", "ssl", caPath).CombinedOutput()
+		if err2 != nil {
+			return fmt.Errorf("security add-trusted-cert failed: %v: %s",
+				err2, strings.TrimSpace(string(out2)))
+		}
 	}
 	return nil
 }
