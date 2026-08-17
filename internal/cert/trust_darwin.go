@@ -24,37 +24,53 @@ type platformTrustStore struct{}
 // loginKeychain 是用户登录钥匙串的默认路径。
 const loginKeychain = "~/Library/Keychains/login.keychain-db"
 
-// Install 将 CA 证书添加到 macOS 登录钥匙串，并设为受信任的根证书。
-// 使用 security add-trusted-cert 命令，-d 表示添加到 admin cert store，
-// -r trustRoot 表示设为根证书信任策略。
-// 注意：-k 参数必须使用展开后的绝对路径（~ 不会被 exec 展开）。
-// 若带 -k 的方案失败（较新 macOS 路径解析问题），回退到不带 -k 的版本。
+// Install 将 CA 证书安装为 macOS 系统级受信任根证书。
+//
+// 优先写入系统钥匙串（Safari / Chrome / 所有浏览器都认系统级信任）；
+// 写入系统钥匙串需要管理员授权（首次弹一次密码框，之后证书已存在不再弹）。
+// 若系统钥匙串写入失败，回退到登录钥匙串（当前用户级信任）。
 func (platformTrustStore) Install(caPath string) error {
-	kc := expandHome(loginKeychain)
+	// 1. 系统钥匙串（系统级信任，浏览器通用）
+	sysKc := "/Library/Keychains/System.keychain"
 	_, err := exec.Command("security",
 		"add-trusted-cert", "-d", "-r", "trustRoot",
+		"-k", sysKc, caPath).CombinedOutput()
+	if err == nil {
+		return nil
+	}
+	// 2. 回退：登录钥匙串（当前用户级信任）
+	kc := expandHome(loginKeychain)
+	out2, err2 := exec.Command("security",
+		"add-trusted-cert", "-d", "-r", "trustRoot",
 		"-k", kc, caPath).CombinedOutput()
-	if err != nil {
-		// 回退：不带 -k（证书进入默认钥匙串，信任写入系统域）
-		out2, err2 := exec.Command("security", "add-trusted-cert", "-d", "-r", "trustRoot", caPath).CombinedOutput()
-		if err2 != nil {
-			return fmt.Errorf("security add-trusted-cert failed: %v: %s",
-				err2, strings.TrimSpace(string(out2)))
-		}
-		_ = out2
+	if err2 != nil {
+		return fmt.Errorf("security add-trusted-cert failed (system & login): %v: %s",
+			err2, strings.TrimSpace(string(out2)))
 	}
 	return nil
 }
 
-// Remove 通过通用名称（CN）从登录钥匙串中删除 CA 证书。
+// Remove 从登录钥匙串和系统钥匙串中删除 CA 证书。
 func (platformTrustStore) Remove(caPath string) error {
 	cn, err := commonNameFromFile(caPath)
 	if err != nil {
 		return err
 	}
-	out, err := exec.Command("security", "delete-certificate", "-c", cn, loginKeychain).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("security delete-certificate failed: %v: %s", err, strings.TrimSpace(string(out)))
+	keychains := []string{
+		"/Library/Keychains/System.keychain",
+		expandHome(loginKeychain),
+	}
+	var lastErr error
+	for _, kc := range keychains {
+		out, err := exec.Command("security", "delete-certificate", "-c", cn, kc).CombinedOutput()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		_ = out
+	}
+	if lastErr != nil {
+		return fmt.Errorf("security delete-certificate failed: %v", lastErr)
 	}
 	return nil
 }

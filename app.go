@@ -480,8 +480,21 @@ func (a *App) RemoveCertificate() error {
 }
 
 // IsCertificateInstalled reports whether the CA is trusted.
+// 实时检测（不经缓存）：前端初始化、点击刷新、设置页面调用时总能拿到
+// 真实状态，避免安装完成后界面仍显示旧缓存导致的"未安装"误报。
 func (a *App) IsCertificateInstalled() bool {
-	return a.certTrusted()
+	a.mu.RLock()
+	ca := a.ca
+	a.mu.RUnlock()
+	if ca == nil {
+		return false
+	}
+	ok, _ := a.trustStore.IsInstalled(ca.CertFile())
+	// 同步缓存（供 MITM 的 CONNECT 决策使用，避免每连接都 exec）。
+	a.mu.Lock()
+	a.certInstalled = ok
+	a.mu.Unlock()
+	return ok
 }
 
 // --- Misc ---
