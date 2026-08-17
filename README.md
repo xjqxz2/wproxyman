@@ -110,14 +110,15 @@ GitHub Actions（`.github/workflows/build.yml`）在每次推送时并行构建�
 | Windows | x64 | `WProxyman_windows_amd64.exe` |
 | Windows | ARM64 | `WProxyman_windows_arm64.exe`（交叉编译） |
 | macOS | Apple Silicon | `WProxyman_darwin_arm64.dmg` |
+| macOS | Intel | `WProxyman_darwin_amd64.dmg` |
 | Linux | x64 | `WProxyman_linux_amd64.AppImage` |
 
 （Linux ARM64 暂不发布；其他架构可在本机执行 `make` 构建）
 
 - **push 到 `main`**：构建产物自动发布到 **Releases** 页面的 *Latest build*（预发布，每次覆盖更新），无需手动操作；
 - **打 tag（如 `v1.0.0`）**：自动发布**正式 Release**。
-- 注：GitHub 已下线 Intel macOS 公共 Runner，macOS 仅云上构建 Apple Silicon；
-  Intel Mac / 其他架构用户可在本机执行 `make` 构建。
+- 注：macOS 使用 macos-26 镜像（arm64 原生）与 macos-26-intel（免费 Intel 标准
+  runner，替代已下线的旧 Intel runner）；macos-14 镜像已进入弃用期（2026-11-02 下线）。
 
 > **macOS 首次打开**：应用未通过 Apple 公证（notarization），macOS Gatekeeper
 > 会提示"无法打开/无法验证开发者"。解决方式（任选其一）：
