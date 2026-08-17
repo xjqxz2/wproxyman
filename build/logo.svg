@@ -23,8 +23,8 @@
     </radialGradient>
   </defs>
 
-  <!-- 背景圆角方块（满幅，四角统一圆角） -->
-  <rect x="0" y="0" width="256" height="256" rx="56" fill="url(#bg)"/>
+  <!-- 背景满幅方块（无圆角，填满整个画布；四角由 macOS 系统遮罩裁切） -->
+  <rect x="0" y="0" width="256" height="256" fill="url(#bg)"/>
   <!-- 顶部内描边高光 -->
   <rect x="7" y="7" width="242" height="242" rx="51" fill="none" stroke="rgba(255,255,255,0.055)" stroke-width="2"/>
 
