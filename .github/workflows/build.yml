@@ -137,9 +137,9 @@ jobs:
                    AppDir/usr/share/applications \
                    AppDir/usr/share/icons/hicolor/256x256/apps
           cp build/bin/WProxyman AppDir/usr/bin/${BIN_NAME}
-          cp build/appicon.png AppDir/usr/share/icons/hicolor/256x256/apps/${BIN_NAME}.png
+          cp build/appicon-rounded.png AppDir/usr/share/icons/hicolor/256x256/apps/${BIN_NAME}.png
           # appimagetool 要求 .desktop 的 Icon= 对应文件位于 AppDir 根目录
-          cp build/appicon.png AppDir/${BIN_NAME}.png
+          cp build/appicon-rounded.png AppDir/${BIN_NAME}.png
           cat > AppDir/${BIN_NAME}.desktop <<EOF
           [Desktop Entry]
           Name=WProxyman

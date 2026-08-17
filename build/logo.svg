@@ -1,32 +1,31 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <defs>
-    <!-- 背景：深色对角渐变 -->
+    <!-- 背景：亮蓝对角渐变（亮色、蓝色调） -->
     <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#262a34"/>
-      <stop offset="1" stop-color="#0f1015"/>
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#2563eb"/>
     </linearGradient>
-    <!-- 字标渐变：天蓝 → 蓝 → 紫 -->
+    <!-- 字标渐变：白 → 极浅蓝（亮底上保持清晰） -->
     <linearGradient id="fg" x1="50" y1="80" x2="205" y2="170" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#7dd3fc"/>
-      <stop offset="0.5" stop-color="#3b82f6"/>
-      <stop offset="1" stop-color="#a78bfa"/>
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#dbeafe"/>
     </linearGradient>
     <!-- 链路连线渐变 -->
     <linearGradient id="link" x1="0" y1="0" x2="1" y2="0" gradientUnits="userSpaceOnUse">
-      <stop offset="0" stop-color="#7dd3fc"/>
-      <stop offset="1" stop-color="#a78bfa"/>
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#dbeafe"/>
     </linearGradient>
     <!-- 节点光晕 -->
     <radialGradient id="glow">
-      <stop offset="0" stop-color="#7dd3fc" stop-opacity="0.5"/>
-      <stop offset="1" stop-color="#7dd3fc" stop-opacity="0"/>
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
     </radialGradient>
   </defs>
 
-  <!-- 背景满幅方块（无圆角，填满整个画布；四角由 macOS 系统遮罩裁切） -->
-  <rect x="0" y="0" width="256" height="256" fill="url(#bg)"/>
+  <!-- 背景圆角方块（rx=56；mac 用满幅版，linux/win 用本圆角版） -->
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="url(#bg)"/>
   <!-- 顶部内描边高光 -->
-  <rect x="7" y="7" width="242" height="242" rx="51" fill="none" stroke="rgba(255,255,255,0.055)" stroke-width="2"/>
+  <rect x="7" y="7" width="242" height="242" rx="49" fill="none" stroke="rgba(255,255,255,0.30)" stroke-width="2"/>
 
   <!-- W（三峰，渐变描边，内容整体居中） -->
   <path d="M 62 88 L 78 154 L 94 106 L 110 154 L 126 88"
@@ -43,6 +42,6 @@
   <!-- 节点光晕 -->
   <circle cx="139" cy="88" r="22" fill="url(#glow)"/>
   <!-- 节点 -->
-  <circle cx="139" cy="88" r="6.5" fill="#7dd3fc"/>
-  <circle cx="139" cy="88" r="12" fill="none" stroke="#7dd3fc" stroke-width="2.5" opacity="0.35"/>
+  <circle cx="139" cy="88" r="6.5" fill="#ffffff"/>
+  <circle cx="139" cy="88" r="12" fill="none" stroke="#ffffff" stroke-width="2.5" opacity="0.35"/>
 </svg>
