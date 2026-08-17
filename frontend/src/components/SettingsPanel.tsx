@@ -266,7 +266,8 @@ const handleInstallCert = async () => {
       });
     } catch (err) {
       console.error('Failed to install certificate', err);
-      setSslMsg({ text: t('settings.installFailed'), ok: false });
+      // 显示后端返回的具体错误（如 Linux 的 sudo 指引），而不是通用文案。
+      setSslMsg({ text: `${t('settings.installFailed')}\n${String(err)}`, ok: false });
     } finally {
       setCertBusy(false);
     }
