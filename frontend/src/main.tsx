@@ -29,7 +29,7 @@ class AppBoundary extends Component<{ children: ReactNode }, { failed: boolean }
     // 否则正常渲染受保护的子组件树。
     if (this.state.failed) {
       return (
-        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: '#e4e4e7', background: '#1a1b1e', fontFamily: 'Inter, -apple-system, sans-serif' }}>
+        <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12, color: '#e4e4e7', background: '#1a1b1e', fontFamily: 'system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
           <div style={{ fontSize: 15, fontWeight: 600 }}>Something went wrong</div>
           <div style={{ fontSize: 12, color: '#9b9ca3' }}>An unexpected error occurred. Restart the app to recover.</div>
         </div>
