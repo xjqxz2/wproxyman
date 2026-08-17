@@ -41,6 +41,14 @@ class AppBoundary extends Component<{ children: ReactNode }, { failed: boolean }
 
 const container = document.getElementById('root')
 
+// 平台检测：macOS 上隐藏系统标题栏后，前端需要预留红绿灯空间并设置
+// 拖拽区域（见 theme.css [data-platform="mac"] 规则）。WKWebView 的
+// UA 以 "Macintosh" 开头，检测含 "Mac" 即可（不含移动设备）。
+const ua = navigator.userAgent
+if (/Macintosh|Mac OS X/.test(ua) && !/iPhone|iPad|iPod/.test(ua)) {
+  document.documentElement.dataset.platform = 'mac'
+}
+
 // 使用 React 19 的 createRoot API 在 #root 容器上创建根节点，
 // 并通过 StrictMode + 错误边界挂载整个应用。
 const root = createRoot(container!)

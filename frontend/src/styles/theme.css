@@ -190,6 +190,25 @@ body,
   gap: 4px;
 }
 
+/* --- macOS 标题栏融合 ---
+   系统标题栏由 Wails 隐藏（mac.TitleBarHiddenInset），内容延伸到顶部。
+   - Toolbar 整体作为窗口拖拽区（-webkit-app-region: drag，双击最大化）；
+   - 左侧预留红绿灯按钮空间（约 72px：三个圆灯 + 边距）；
+   - 所有可交互元素必须 no-drag，否则点击/输入会失效。 */
+.toolbar {
+  -webkit-app-region: no-drag;
+}
+[data-platform="mac"] .toolbar {
+  -webkit-app-region: drag;
+  padding-left: 72px;
+  padding-right: 12px;
+}
+[data-platform="mac"] .toolbar .tb-btn,
+[data-platform="mac"] .toolbar .tb-search,
+[data-platform="mac"] .toolbar .tb-sep {
+  -webkit-app-region: no-drag;
+}
+
 /* --- Sidebar / Source list --- */
 .sidebar {
   width: var(--sidebar-w);

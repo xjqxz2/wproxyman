@@ -19,6 +19,7 @@ import (
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/mac"
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
@@ -56,6 +57,12 @@ func main() {
 			WebviewGpuIsDisabled: true,
 			// 窗口缩放时防抖重绘，避免边缘闪烁。
 			ResizeDebounceMS: 100,
+		},
+		// macOS：隐藏系统标题栏，与前端 Toolbar 融合（全尺寸内容延伸到顶部，
+		// 标题栏透明，保留红绿灯按钮）。前端 .toolbar 需预留左侧红绿灯空间
+		// 并设置 -webkit-app-region: drag 以支持拖拽窗口。
+		Mac: &mac.Options{
+			TitleBar: mac.TitleBarHiddenInset(),
 		},
 	})
 
