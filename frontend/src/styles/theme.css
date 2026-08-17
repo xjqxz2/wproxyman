@@ -192,21 +192,25 @@ body,
 
 /* --- macOS 标题栏融合 ---
    系统标题栏由 Wails 隐藏（mac.TitleBarHiddenInset），内容延伸到顶部。
-   - Toolbar 整体作为窗口拖拽区（-webkit-app-region: drag，双击最大化）；
+   Wails 的窗口拖拽不走 -webkit-app-region，而是由 runtime JS 读取
+   目标元素的自定义属性 --wails-draggable: drag（值匹配才调用原生
+   performWindowDragWithEvent）。该变量会继承，故交互元素必须显式
+   覆盖为 none 才能正常点击。
+   - Toolbar 整体作为窗口拖拽区（单击拖拽 + 双击由系统处理）；
    - 左侧预留红绿灯按钮空间（约 72px：三个圆灯 + 边距）；
-   - 所有可交互元素必须 no-drag，否则点击/输入会失效。 */
+   - 所有可交互元素必须 --wails-draggable: none，否则点击/输入失效。 */
 .toolbar {
-  -webkit-app-region: no-drag;
+  --wails-draggable: none;
 }
 [data-platform="mac"] .toolbar {
-  -webkit-app-region: drag;
+  --wails-draggable: drag;
   padding-left: 72px;
   padding-right: 12px;
 }
 [data-platform="mac"] .toolbar .tb-btn,
 [data-platform="mac"] .toolbar .tb-search,
 [data-platform="mac"] .toolbar .tb-sep {
-  -webkit-app-region: no-drag;
+  --wails-draggable: none;
 }
 
 /* --- Sidebar / Source list --- */
