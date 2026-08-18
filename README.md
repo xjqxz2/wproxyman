@@ -23,7 +23,7 @@
 
 ## 🚀 快速开始
 
-1. 从 [Releases](https://github.com/xjqxz2/wproxyman/releases) 下载对应平台的安装包（Windows `.exe` / macOS `.dmg` / Linux `.AppImage`）；
+1. 从 [Releases](https://github.com/xjqxz2/wproxyman/releases) 下载对应平台的安装包（Windows `.exe` / macOS `.dmg` / Linux `.tar.gz`/`.deb`/`.rpm`）；
 2. 启动应用 —— **自动开启抓包代理并接管系统代理**；
 3. 浏览器刷新页面，流量即出现在列表中。
 

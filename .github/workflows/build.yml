@@ -1,10 +1,12 @@
 # ============================================================================
 # WProxyman — build & release pipeline（全平台矩阵）
 #
-# 产物命名：WProxyman_<os>_<arch>.<ext>
-#   - Windows amd64/arm64     → .exe（arm64 在 amd64 runner 交叉编译）
-#   - macOS arm64 / amd64     → .dmg（hdiutil，系统自带）
-#   - Linux amd64             → .AppImage（appimagetool 手动打包）
+# 产物命名：
+#   - Windows amd64/arm64  → WProxyman_windows_*.exe（arm64 在 amd64 runner 交叉编译）
+#   - macOS arm64 / amd64  → WProxyman_darwin_*.dmg（hdiutil，系统自带）
+#   - Linux amd64          → wproxyman_<ver>_linux_amd64.tar.gz / .deb / .rpm 三件套
+#                          （Wails v2 不内置 Linux 打包；AppImage 依赖 FUSE，
+#                           改为覆盖全发行版的三格式）
 #
 # 每次 push 到 main：
 #   1. 各原生 Runner 并行构建；
@@ -55,14 +57,6 @@ jobs:
             asset: WProxyman_darwin_amd64.dmg
             isWindows: "false"
 
-          # --- Linux：amd64（x64 runner）---
-          - os: ubuntu-22.04
-            platform: linux/amd64
-            artifact: wproxyman-linux-amd64
-            asset: WProxyman_linux_amd64.AppImage
-            isWindows: "false"
-          # 注：Linux arm64 暂不发布（webkit2gtk-4.0 依赖在 ARM 源上不稳定）
-
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -80,17 +74,6 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential pkg-config \
-            libgtk-3-dev \
-            libwebkit2gtk-4.0-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev
 
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
@@ -130,49 +113,6 @@ jobs:
             "${{ matrix.asset }}"
           rm -rf "$DMG_STAGE"
 
-      # --- Linux：构建二进制后手动打包为 AppImage ---
-      - name: Build Linux
-        if: runner.os == 'Linux'
-        run: wails build -platform ${{ matrix.platform }}
-
-      - name: Package AppImage (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -e
-          BIN_NAME="wproxyman"
-          # 组装 AppDir 结构。
-          # 注意：appimagetool 要求 .desktop 文件位于 AppDir 根目录，
-          # 而不是 usr/share/applications/ 子目录。
-          mkdir -p AppDir/usr/bin \
-                   AppDir/usr/share/applications \
-                   AppDir/usr/share/icons/hicolor/256x256/apps
-          cp build/bin/WProxyman AppDir/usr/bin/${BIN_NAME}
-          cp build/appicon-rounded.png AppDir/usr/share/icons/hicolor/256x256/apps/${BIN_NAME}.png
-          # appimagetool 要求 .desktop 的 Icon= 对应文件位于 AppDir 根目录
-          cp build/appicon-rounded.png AppDir/${BIN_NAME}.png
-          cat > AppDir/${BIN_NAME}.desktop <<EOF
-          [Desktop Entry]
-          Name=WProxyman
-          Comment=HTTP/HTTPS debugging proxy
-          Exec=${BIN_NAME}
-          Icon=${BIN_NAME}
-          Terminal=false
-          Type=Application
-          Categories=Development;
-          EOF
-          cp AppDir/${BIN_NAME}.desktop AppDir/usr/share/applications/
-          # 下载 appimagetool（按架构），无 FUSE 环境用 --appimage-extract 运行
-          if [ "${{ matrix.platform }}" = "linux/arm64" ]; then
-            URL="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-aarch64.AppImage"
-          else
-            URL="https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage"
-          fi
-          curl -sL "$URL" -o appimagetool.AppImage
-          chmod +x appimagetool.AppImage
-          ./appimagetool.AppImage --appimage-extract >/dev/null
-          ./squashfs-root/AppRun AppDir "${{ matrix.asset }}"
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -190,11 +130,110 @@ jobs:
             ${{ matrix.asset }}
 
   # ---------------------------------------------------------------------------
+  # Linux 构建：编译原生二进制并上传，供 package-linux job 打包。
+  # （独立 job：Wails 需在 Linux 原生环境编译 WebKitGTK 绑定。）
+  # ---------------------------------------------------------------------------
+  build-linux:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config \
+            libgtk-3-dev \
+            libwebkit2gtk-4.0-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Build Linux binary
+        run: wails build -platform linux/amd64
+
+      - name: Upload Linux binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wproxyman-linux-binary
+          path: build/bin/WProxyman
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Linux 打包：拉取构建出的二进制，产出 .tar.gz / .deb / .rpm 三件套。
+  # （Wails v2 不内置 Linux 打包，且 AppImage 依赖 FUSE 在部分发行版不可用，
+  #  故改为覆盖全发行版的三种格式。）
+  # ---------------------------------------------------------------------------
+  package-linux:
+    needs: build-linux
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Linux binary
+        uses: actions/download-artifact@v4
+        with:
+          name: wproxyman-linux-binary
+          path: build/bin
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+
+      - name: Package Linux (tar.gz / deb / rpm)
+        shell: bash
+        run: |
+          # 版本号：tag（v*）用纯版本号，push main 用 dev 构建号。
+          if [ "${{ startswith(github.ref, 'refs/tags/') }}" = "true" ]; then
+            PKG_VER="${{ github.ref_name }}"
+          else
+            PKG_VER="0.0.0+dev.$(git rev-parse --short HEAD)"
+          fi
+          PKG_VER="${PKG_VER#v}"
+          echo "packaging version: $PKG_VER"
+          chmod +x scripts/package-linux.sh
+          ./scripts/package-linux.sh build/bin/WProxyman "$PKG_VER" dist-linux
+          ls -la dist-linux/
+
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: wproxyman-linux-packages
+          path: dist-linux/*
+          if-no-files-found: error
+
+      # 打 tag 时：直接把三件套附加到正式 Release。
+      - name: Attach Linux packages to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-linux/*
+
+  # ---------------------------------------------------------------------------
   # 自动发布：push 到 main 构建成功后，把全平台产物发布到 Releases 页面的
   # "Latest build"（预发布）。每次构建覆盖更新，无需手动打 tag。
   # ---------------------------------------------------------------------------
   publish:
-    needs: build
+    needs: [build, build-linux, package-linux]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
 
@@ -204,7 +243,7 @@ jobs:
         with:
           path: artifacts
 
-      # 全部产物都是单文件（exe/dmg/AppImage），直接收拢到一个目录。
+      # 全部产物收拢到一个目录（exe/dmg + Linux 三件套）。
       - name: Assemble release files
         run: |
           mkdir -p release
@@ -248,7 +287,7 @@ jobs:
             | Windows | ARM64 | WProxyman_windows_arm64.exe |
             | macOS | Apple Silicon | WProxyman_darwin_arm64.dmg |
             | macOS | Intel | WProxyman_darwin_amd64.dmg |
-            | Linux | x64 | WProxyman_linux_amd64.AppImage |
+            | Linux | x64 | wproxyman_<ver>_linux_amd64.tar.gz / .deb / .rpm |
 
             > **macOS 首次打开说明**：应用未通过 Apple 公证（notarization），
             > macOS Gatekeeper 会提示"无法打开/无法验证开发者"。请任选其一：
