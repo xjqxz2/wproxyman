@@ -67,4 +67,11 @@ type Config struct {
 	MaxBodyBytes int64
 	// RequestTimeout 限制单次上游请求的往返时长。
 	RequestTimeout time.Duration
+	// BindHost 决定监听地址；空串表示默认仅绑定回环 127.0.0.1。
+	// 设为 "0.0.0.0" 可允许局域网设备连接（配合 AllowLAN 设置使用）。
+	BindHost string
+	// CACertPEM 是本地 CA 的 PEM 证书内容（非空时启用内置证书下载端点：
+	// 手机/模拟器可访问 http://<电脑IP>:<port>/wpx-cert.pem 下载并安装，
+	// 等价于 Proxyman 的证书安装页）。为 nil 时端点不启用。
+	CACertPEM []byte
 }

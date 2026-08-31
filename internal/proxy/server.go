@@ -34,13 +34,16 @@ type Server struct {
 }
 
 // NewServer 根据配置创建代理服务器，并填充默认值
-//（默认 64 MiB 体积上限、120 秒请求超时）。
+// （默认 64 MiB 体积上限、120 秒请求超时）。
 func NewServer(cfg Config) *Server {
 	if cfg.MaxBodyBytes == 0 {
 		cfg.MaxBodyBytes = 64 << 20 // 64 MiB
 	}
 	if cfg.RequestTimeout == 0 {
 		cfg.RequestTimeout = 120 * time.Second
+	}
+	if cfg.BindHost == "" {
+		cfg.BindHost = "127.0.0.1"
 	}
 	s := &Server{
 		cfg:   cfg,
@@ -57,7 +60,7 @@ func (s *Server) Start() error {
 	if s.started {
 		return fmt.Errorf("proxy already started")
 	}
-	addr := fmt.Sprintf("127.0.0.1:%d", s.cfg.Port)
+	addr := fmt.Sprintf("%s:%d", s.cfg.BindHost, s.cfg.Port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("proxy listen on %s: %w", addr, err)

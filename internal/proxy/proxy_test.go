@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -243,6 +244,220 @@ func TestInterceptorShortCircuit(t *testing.T) {
 	resp.Body.Close()
 	if string(body) != "mapped!" {
 		t.Fatalf("expected mapped response, got %q", body)
+	}
+}
+
+// TestLANBindReachable 验证 BindHost="0.0.0.0" 时：
+//   - 回环地址（127.0.0.1）仍然可达（0.0.0.0 包含回环）；
+//   - 本机非回环 IPv4（局域网地址）可 TCP 直连代理端口，证明局域网设备能接入。
+//
+// 若本机没有非回环 IPv4（如 CI 隔离环境），跳过局域网断言但保留回环断言。
+func TestLANBindReachable(t *testing.T) {
+	ca := testCA(t)
+	srv := NewServer(Config{
+		Port:     0,
+		BindHost: "0.0.0.0",
+		CA:       ca,
+		SSLProxyEnabled: func(host string) bool {
+			return false
+		},
+		OnFlow: func(f *models.Flow, phase string) {},
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start proxy on 0.0.0.0: %v", err)
+	}
+	defer srv.Stop()
+
+	port := srv.Port()
+
+	// 回环仍可达。
+	if err := dialTimeout("127.0.0.1", port); err != nil {
+		t.Fatalf("loopback 127.0.0.1:%d should be reachable when bound to 0.0.0.0: %v", port, err)
+	}
+
+	// 局域网 IPv4 可达（若存在），并完成一次真实 HTTP 代理往返。
+	ips := lanIPv4s(t)
+	if len(ips) == 0 {
+		t.Skip("no non-loopback IPv4 addresses on this machine; skipping LAN reachability assertions")
+	}
+	var lastErr error
+	for _, ip := range ips {
+		if err := dialTimeout(ip, port); err != nil {
+			lastErr = err
+			continue
+		}
+		// 通过局域网地址走完整 HTTP 代理链路（真实设备场景等价）。
+		lanAddr := net.JoinHostPort(ip, strconv.Itoa(port))
+		client := httpClientThroughProxy(t, lanAddr, ca)
+		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, "lan-ok %s", r.Method)
+		}))
+		resp, err := client.Get(backend.URL + "/x")
+		if err != nil {
+			lastErr = err
+			backend.Close()
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		backend.Close()
+		if string(body) != "lan-ok GET" {
+			t.Fatalf("via LAN addr %s: expected lan-ok GET, got %q", lanAddr, body)
+		}
+		return // 至少一个局域网地址完整可用即通过
+	}
+	t.Fatalf("none of the LAN addresses %v are reachable on 0.0.0.0:%d: %v", ips, port, lastErr)
+}
+
+// dialTimeout 对 host:port 发起 2 秒超时的 TCP 连接尝试。
+func dialTimeout(host string, port int) error {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, strconv.Itoa(port)), 2*time.Second)
+	if err != nil {
+		return err
+	}
+	_ = conn.Close()
+	return nil
+}
+
+// lanIPv4s 列出本机非回环 IPv4 地址（与 app.go GetLANIPs 的筛选逻辑一致）。
+func lanIPv4s(t *testing.T) []string {
+	t.Helper()
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatalf("list interfaces: %v", err)
+	}
+	var out []string
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ip, ok := addr.(*net.IPNet)
+			if ok && ip.IP.To4() != nil {
+				out = append(out, ip.IP.String())
+			}
+		}
+	}
+	return out
+}
+
+// TestServeCACertDownload 验证代理内置的 CA 证书下载端点（手机/模拟器可通过
+// http://<电脑IP>:<port>/wpx-cert.pem 下载并安装 CA，等价于 Proxyman 的证书页）：
+//   - 配置了 CACertPEM 时，GET /wpx-cert.pem 返回 200 且正文为该 PEM；
+//   - Content-Type 为 x-x509-ca-cert，便于手机识别为证书；
+//   - 该请求不产生 Flow（不应污染流量列表）；
+//   - 未配置 CACertPEM 时端点不启用（回退为普通转发，此处仅验证启用分支）。
+func TestServeCACertDownload(t *testing.T) {
+	ca := testCA(t)
+	pem := ca.CertPEM()
+	if len(pem) == 0 {
+		t.Fatal("CA PEM should not be empty")
+	}
+
+	var flows []*models.Flow
+	srv := NewServer(Config{
+		Port:      0,
+		CA:        ca,
+		CACertPEM: pem,
+		SSLProxyEnabled: func(host string) bool {
+			return false
+		},
+		OnFlow: func(f *models.Flow, phase string) {
+			if phase == "completed" {
+				flows = append(flows, f)
+			}
+		},
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	defer srv.Stop()
+
+	// 用代理客户端请求下载端点（等价于手机浏览器把代理指向本机后访问该 URL）。
+	client := httpClientThroughProxy(t, srv.Addr(), ca)
+	resp, err := client.Get("http://" + srv.Addr() + "/wpx-cert.pem")
+	if err != nil {
+		t.Fatalf("GET /wpx-cert.pem via proxy: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/x-x509-ca-cert" {
+		t.Fatalf("expected application/x-x509-ca-cert content type, got %q", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != string(pem) {
+		t.Fatalf("expected body == CA PEM (%d bytes), got %d bytes", len(pem), len(body))
+	}
+
+	// 证书下载请求不应产生 Flow。
+	time.Sleep(100 * time.Millisecond)
+	if len(flows) != 0 {
+		t.Fatalf("cert download should not create a flow, got %d", len(flows))
+	}
+}
+
+// TestLANMITMHTTPS 模拟手机经局域网连到代理并解密 HTTPS 的场景：
+// 代理绑定 0.0.0.0（AllowLAN 等价），经本机非回环 IPv4 走完整 MITM 链路，
+// 客户端信任本地 CA，访问自签名 HTTPS 后端。若本机无局域网地址则跳过。
+func TestLANMITMHTTPS(t *testing.T) {
+	ips := lanIPv4s(t)
+	if len(ips) == 0 {
+		t.Skip("no non-loopback IPv4 addresses on this machine")
+	}
+
+	ca := testCA(t)
+	var flows []*models.Flow
+	srv := NewServer(Config{
+		Port:     0,
+		BindHost: "0.0.0.0",
+		CA:       ca,
+		SSLProxyEnabled: func(host string) bool {
+			return true // 手机 HTTPS 需要 MITM 解密
+		},
+		OnFlow: func(f *models.Flow, phase string) {
+			if phase == "completed" {
+				flows = append(flows, f)
+			}
+		},
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start proxy on 0.0.0.0: %v", err)
+	}
+	defer srv.Stop()
+	srv.SetUpstreamInsecure(true) // 与 TestMITMHTTPS 一致：上游自签名需跳过校验
+
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "secure-lan:%s", r.URL.Path)
+	}))
+	defer backend.Close()
+
+	// 通过局域网地址连接代理（等价于手机把代理指向电脑 IP:端口）。
+	lanAddr := net.JoinHostPort(ips[0], strconv.Itoa(srv.Port()))
+	client := httpClientThroughProxy(t, lanAddr, ca)
+	resp, err := client.Get(backend.URL + "/secret")
+	if err != nil {
+		t.Fatalf("GET via LAN MITM: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(body) != "secure-lan:/secret" {
+		t.Fatalf("unexpected body: %q", body)
+	}
+
+	waitFlows(t, &flows, 1)
+	f := flows[0]
+	if !f.TLS || f.Scheme != "https" {
+		t.Fatalf("expected https flow, got scheme=%s tls=%v", f.Scheme, f.TLS)
+	}
+	if f.ResponseStatus != 200 {
+		t.Fatalf("expected 200, got %d", f.ResponseStatus)
 	}
 }
 

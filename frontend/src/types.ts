@@ -190,6 +190,7 @@ export interface EngineConfig {
 export interface Settings {
   proxyPort: number; // 代理监听端口
   autoStartProxy: boolean; // 启动时自动开启代理
+  allowLAN: boolean; // 允许局域网设备连接（监听 0.0.0.0）
   sslEnabledDefault: boolean; // SSL 代理默认开关
   sslHosts: Record<string, boolean>; // 各主机名 SSL 解密开关
   theme: string; // 界面主题

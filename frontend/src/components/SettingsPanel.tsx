@@ -89,9 +89,11 @@ const [bodyInput, setBodyInput] = useState(() => String(Math.round((useApp.getSt
   const [captureMsg, setCaptureMsg] = useState<OpMessage>(null);
 
   // ---- Devices 鍖哄潡鐨勬湰鍦扮姸鎬?----
-  // 灞€鍩熺綉 IP 鍒楄〃涓庡姞杞藉け璐ユ彁绀恒€
+  // 灞€鍩熺綉 IP 鍒楄〃涓庡姞杞借垂璐ユ彁绀恒€
 const [devices, setDevices] = useState<string[]>([]);
   const [devicesError, setDevicesError] = useState('');
+  // 局域网连接开关切换结果消息。
+  const [lanMsg, setLanMsg] = useState<OpMessage>(null);
 
   // ---- Sessions 鍖哄潡鐨勬湰鍦扮姸鎬?----
   // 浼氳瘽鎿嶄綔蹇欑鏍囪涓庣粨鏋滄秷鎭€
@@ -313,6 +315,21 @@ if (maxBodyBytes === settings.maxBodyBytes) return;
     } catch (err) {
       console.error('Failed to save max body size', err);
       setCaptureMsg({ text: t('settings.maxBodySaveFailed'), ok: false });
+    }
+  };
+
+  // handleAllowLAN — 切换局域网连接开关（Allow LAN）并保存。
+  // 配合 handleBodyBlur 的保存模式：先写后端，成功后更新 store 与提示。
+  const handleAllowLAN = async (on: boolean) => {
+    if (!settings || on === settings.allowLAN) return;
+    const next: Settings = { ...settings, allowLAN: on };
+    try {
+      await api.setSettings(next);
+      setSettings(next);
+      setLanMsg({ text: t('settings.allowLANSaved'), ok: true });
+    } catch (err) {
+      console.error('Failed to save allowLAN', err);
+      setLanMsg({ text: t('settings.allowLANSaveFailed'), ok: false });
     }
   };
 
@@ -548,6 +565,40 @@ if (e.target === e.currentTarget) onClose();
             ) : (
               <div style={hintStyle}>{devicesError || t('settings.noLanAddresses')}</div>
             )}
+            {/* 局域网连接开关：将代理绑定到 0.0.0.0 供其他设备接入。 */}
+            <div style={rowStyle}>
+              <span style={{ color: 'var(--text-secondary)' }}>{t('settings.allowLAN')}</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={settings?.allowLAN ?? false}
+                aria-label={t('settings.allowLAN')}
+                className={`switch${settings?.allowLAN ? ' on' : ''}`}
+                onClick={() => handleAllowLAN(!settings?.allowLAN)}
+              />
+            </div>
+            <div style={hintStyle}>{t('settings.allowLANHint')}</div>
+            {lanMsg && <div style={statusStyle(lanMsg.ok)}>{lanMsg.text}</div>}
+            {/* CA 证书下载：手机/模拟器在浏览器打开以下地址即可下载安装证书。 */}
+            <div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 8 }}>
+              {t('settings.certDownload')}
+            </div>
+            {proxy.port > 0 ? (
+              devices.length > 0 ? (
+                <ul style={{ listStyle: 'none', margin: '4px 0 0', padding: 0 }}>
+                  {devices.map((ip) => (
+                    <li key={`cert-${ip}`} style={{ ...monoStyle, fontSize: 11.5, padding: '2px 0', color: 'var(--text-secondary)' }}>
+                      http://{ip}:{proxy.port}/wpx-cert.pem
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div style={hintStyle}>{devicesError || t('settings.noLanAddresses')}</div>
+              )
+            ) : (
+              <div style={hintStyle}>{t('settings.certDownloadPortHint')}</div>
+            )}
+            <div style={hintStyle}>{t('settings.certDownloadHint')}</div>
             <div style={hintStyle}>{t('settings.devicesHint')}</div>
           </div>
 

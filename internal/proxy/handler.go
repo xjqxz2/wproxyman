@@ -3,9 +3,9 @@
 //  1. 普通 HTTP 请求（ServeHTTP → handleHTTP）：走完整拦截管线，
 //     可被工具修改/暂停/短路，然后转发上游。
 //  2. CONNECT 请求（handleConnect）：按域名决定处理方式——
-//      - SSLProxyEnabled(host) 为 true → mitmConnect：进行 TLS 拦截
-//        （用本地 CA 签发该域名的证书，协商 HTTP/2 或 HTTP/1.1 后解密）；
-//      - 否则 → 原始 TCP 隧道（transparent tunnel，不解密、不记录）。
+//     - SSLProxyEnabled(host) 为 true → mitmConnect：进行 TLS 拦截
+//     （用本地 CA 签发该域名的证书，协商 HTTP/2 或 HTTP/1.1 后解密）；
+//     - 否则 → 原始 TCP 隧道（transparent tunnel，不解密、不记录）。
 //
 // 注意：MITM 后的 HTTP 服务器必须直接读取解密后的 tlsConn，绝不能复用
 // 外层 http.Server 的缓冲读取器（那里还是密文）。
@@ -32,13 +32,31 @@ type handler struct {
 	server *Server
 }
 
+// certDownloadPath 是内置 CA 证书下载端点的路径。
+// 手机/模拟器把代理指向本机后，在浏览器访问
+// http://<电脑IP>:<port>/wpx-cert.pem 即可下载并安装抓包证书
+// （等价于 Proxyman 的证书安装页）。
+const certDownloadPath = "/wpx-cert.pem"
+
 // ServeHTTP 是代理的主入口：CONNECT 走隧道/MITM，其余走 HTTP 转发。
+// 在转发前先处理内置证书下载端点（不产生 Flow，不污染流量列表）。
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
 		h.handleConnect(w, r)
 		return
 	}
+	if cfg := h.server.Config(); len(cfg.CACertPEM) > 0 && r.URL.Path == certDownloadPath {
+		h.serveCACert(w, cfg.CACertPEM)
+		return
+	}
 	h.handleHTTP(w, r)
+}
+
+// serveCACert 以证书下载形式返回本地 CA 的 PEM 内容。
+func (h *handler) serveCACert(w http.ResponseWriter, pem []byte) {
+	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
+	w.Header().Set("Content-Disposition", `attachment; filename="wproxyman-ca.pem"`)
+	_, _ = w.Write(pem)
 }
 
 // sslProxyEnabled 查询该主机是否启用 MITM 解密。

@@ -1,4 +1,4 @@
-﻿package main
+package main
 
 // 文件说明： 设置与工具配置：读写持久化 settings.json、应用/获取工具引擎配置、
 
@@ -12,13 +12,14 @@ import (
 
 // Settings holds persisted application preferences.
 type Settings struct {
-	ProxyPort          int                  `json:"proxyPort"`
-	AutoStartProxy     bool                 `json:"autoStartProxy"`
-	SSLEnabledDefault  bool                 `json:"sslEnabledDefault"`
-	SSLHosts           map[string]bool      `json:"sslHosts"`
-	Theme              string               `json:"theme"` // "dark" | "light"
-	ToolConfig         *tools.EngineConfig  `json:"toolConfig"`
-	MaxBodyBytes       int64                `json:"maxBodyBytes"`
+	ProxyPort         int                 `json:"proxyPort"`
+	AutoStartProxy    bool                `json:"autoStartProxy"`
+	AllowLAN          bool                `json:"allowLAN"`
+	SSLEnabledDefault bool                `json:"sslEnabledDefault"`
+	SSLHosts          map[string]bool     `json:"sslHosts"`
+	Theme             string              `json:"theme"` // "dark" | "light"
+	ToolConfig        *tools.EngineConfig `json:"toolConfig"`
+	MaxBodyBytes      int64               `json:"maxBodyBytes"`
 }
 
 func settingsPath() string {
@@ -29,6 +30,7 @@ func loadSettings() Settings {
 	s := Settings{
 		ProxyPort:         0,
 		AutoStartProxy:    true, // start capturing immediately, like Proxyman
+		AllowLAN:          false,
 		SSLEnabledDefault: true,
 		SSLHosts:          make(map[string]bool),
 		Theme:             "dark",
@@ -68,6 +70,7 @@ func (a *App) GetSettings() Settings {
 func (a *App) SetSettings(s Settings) {
 	a.mu.Lock()
 	a.settings.Theme = s.Theme
+	a.settings.AllowLAN = s.AllowLAN
 	if s.MaxBodyBytes > 0 {
 		a.settings.MaxBodyBytes = s.MaxBodyBytes
 	}

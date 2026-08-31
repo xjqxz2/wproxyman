@@ -1,4 +1,4 @@
-﻿// App 是 Wails 应用根对象（服务层）：所有导出方法都会被 Wails 自动生成为
+// App 是 Wails 应用根对象（服务层）：所有导出方法都会被 Wails 自动生成为
 // 前端可调用的 TypeScript API。职责包括：
 //
 //   - 生命周期：startup（初始化设置/CA/代理自动启动）、shutdown（清理）；
@@ -37,15 +37,15 @@ type App struct {
 	// mu 保护流量仓库与代理状态等共享数据（读写锁）。
 	mu sync.RWMutex
 
-	ca          *cert.CA           // 本地证书颁发机构
-	trustStore  cert.TrustStore    // 平台信任库（Win/mac/Linux）
-	engine      *tools.Engine      // 工具管线引擎
-	proxySrv    *proxy.Server      // 拦截代理服务器
-	sysProxy    systemproxy.Manager // 系统代理管理器
-	settings    Settings           // 持久化设置
+	ca         *cert.CA            // 本地证书颁发机构
+	trustStore cert.TrustStore     // 平台信任库（Win/mac/Linux）
+	engine     *tools.Engine       // 工具管线引擎
+	proxySrv   *proxy.Server       // 拦截代理服务器
+	sysProxy   systemproxy.Manager // 系统代理管理器
+	settings   Settings            // 持久化设置
 
 	// 流量仓库（内存中已捕获的 Flow）
-	flows    []*models.Flow      // 按捕获顺序追加
+	flows    []*models.Flow          // 按捕获顺序追加
 	flowIdx  map[string]*models.Flow // ID → Flow 索引
 	flowsSeq int
 
@@ -254,11 +254,25 @@ func (a *App) startProxy(port int) (int, error) {
 		a.mu.Unlock()
 		return p, nil
 	}
+	// AllowLAN 开启时监听 0.0.0.0，允许局域网设备（手机/模拟器）接入抓包；
+	// 否则保持 127.0.0.1 回环（不对局域网暴露）。
+	bindHost := "127.0.0.1"
+	if a.settings.AllowLAN {
+		bindHost = "0.0.0.0"
+	}
+	// 启用内置证书下载端点：手机可访问 http://<电脑IP>:<port>/wpx-cert.pem
+	// 下载并安装 CA（等价于 Proxyman 的证书安装页）。CA 缺失时置空禁用。
+	var certPEM []byte
+	if a.ca != nil {
+		certPEM = a.ca.CertPEM()
+	}
 	srv := proxy.NewServer(proxy.Config{
-		Port:      port,
-		CA:        a.ca,
-		OnFlow:    a.onFlow,
-		WrapConn:  a.engine.WrapConn,
+		Port:        port,
+		BindHost:    bindHost,
+		CA:          a.ca,
+		CACertPEM:   certPEM,
+		OnFlow:      a.onFlow,
+		WrapConn:    a.engine.WrapConn,
 		Interceptor: a.engine,
 		SSLProxyEnabled: func(host string) bool {
 			// Only MITM when the CA is trusted by the client; otherwise the
@@ -377,8 +391,8 @@ func (a *App) onFlow(f *models.Flow, phase string) {
 
 func (a *App) emitProxyStatus() {
 	a.emit("proxy:status", map[string]interface{}{
-		"running":    a.IsProxyRunning(),
-		"port":       a.GetProxyPort(),
+		"running":     a.IsProxyRunning(),
+		"port":        a.GetProxyPort(),
 		"systemProxy": a.sysProxy.Status(),
 	})
 }
