@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -458,6 +459,69 @@ func TestLANMITMHTTPS(t *testing.T) {
 	}
 	if f.ResponseStatus != 200 {
 		t.Fatalf("expected 200, got %d", f.ResponseStatus)
+	}
+}
+
+// TestServeCertInstallPage 验证代理内置的证书安装指引页（等价于 Proxyman/
+// Charles 的证书安装页）：手机/模拟器访问 http://<电脑IP>:<port>/wpx-cert
+// 得到一份含 iOS（含关键的"证书信任设置→完全信任"一步）与 Android 安装步骤、
+// 并链接到 /wpx-cert.pem 证书下载的 HTML 页面。
+func TestServeCertInstallPage(t *testing.T) {
+	ca := testCA(t)
+	pem := ca.CertPEM()
+
+	var flows []*models.Flow
+	srv := NewServer(Config{
+		Port:      0,
+		CA:        ca,
+		CACertPEM: pem,
+		SSLProxyEnabled: func(host string) bool {
+			return false
+		},
+		OnFlow: func(f *models.Flow, phase string) {
+			if phase == "completed" {
+				flows = append(flows, f)
+			}
+		},
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start proxy: %v", err)
+	}
+	defer srv.Stop()
+
+	client := httpClientThroughProxy(t, srv.Addr(), ca)
+	resp, err := client.Get("http://" + srv.Addr() + "/wpx-cert")
+	if err != nil {
+		t.Fatalf("GET /wpx-cert via proxy: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !strings.Contains(ct, "text/html") {
+		t.Fatalf("expected text/html content type, got %q", ct)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	html := string(body)
+
+	// 页面必须包含：iOS 完全信任关键步骤、Android 安装步骤、证书下载链接。
+	for _, want := range []string{
+		"wpx-cert.pem",      // 证书下载链接
+		"Certificate Trust", // iOS 证书信任设置（完全信任）英文文案
+		"trust",
+		"Android",
+	} {
+		if !strings.Contains(strings.ToLower(html), strings.ToLower(want)) {
+			t.Fatalf("install page missing %q", want)
+		}
+	}
+
+	// 指引页请求不应产生 Flow。
+	time.Sleep(100 * time.Millisecond)
+	if len(flows) != 0 {
+		t.Fatalf("install page should not create a flow, got %d", len(flows))
 	}
 }
 

@@ -159,7 +159,7 @@ export const zhCN: Dict = {
     allowLANSaved: '已保存',
     allowLANSaveFailed: '保存局域网设置失败',
     certDownload: 'CA 证书下载',
-    certDownloadHint: '在手机上通过本代理用浏览器打开下方地址，即可下载并安装抓包证书。',
+    certDownloadHint: '在手机上通过本代理用浏览器打开下方地址。iOS：安装描述文件后，还需在 设置 → 通用 → 关于本机 → 证书信任设置 中开启完全信任；Android：作为 CA 证书安装。',
     certDownloadPortHint: '启动代理后可查看下载地址。',
     sessions: '会话',
     saveSession: '保存会话',

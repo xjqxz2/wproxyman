@@ -38,16 +38,28 @@ type handler struct {
 // （等价于 Proxyman 的证书安装页）。
 const certDownloadPath = "/wpx-cert.pem"
 
+// certInstallPagePath 是内置证书安装指引页的路径（不含 .pem 后缀）。
+// 手机/模拟器访问 http://<电脑IP>:<port>/wpx-cert 得到含 iOS/Android
+// 安装步骤（含 iOS 关键的"证书信任设置→完全信任"一步）与证书下载链接的
+// HTML 页面，等价于 Proxyman 的证书安装页。
+const certInstallPagePath = "/wpx-cert"
+
 // ServeHTTP 是代理的主入口：CONNECT 走隧道/MITM，其余走 HTTP 转发。
-// 在转发前先处理内置证书下载端点（不产生 Flow，不污染流量列表）。
+// 在转发前先处理内置证书下载端点与安装指引页（均不产生 Flow）。
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodConnect {
 		h.handleConnect(w, r)
 		return
 	}
-	if cfg := h.server.Config(); len(cfg.CACertPEM) > 0 && r.URL.Path == certDownloadPath {
-		h.serveCACert(w, cfg.CACertPEM)
-		return
+	if cfg := h.server.Config(); len(cfg.CACertPEM) > 0 {
+		switch r.URL.Path {
+		case certDownloadPath:
+			h.serveCACert(w, cfg.CACertPEM)
+			return
+		case certInstallPagePath:
+			h.serveCertInstallPage(w)
+			return
+		}
 	}
 	h.handleHTTP(w, r)
 }
@@ -57,6 +69,59 @@ func (h *handler) serveCACert(w http.ResponseWriter, pem []byte) {
 	w.Header().Set("Content-Type", "application/x-x509-ca-cert")
 	w.Header().Set("Content-Disposition", `attachment; filename="wproxyman-ca.pem"`)
 	_, _ = w.Write(pem)
+}
+
+// serveCertInstallPage 返回证书安装指引页（双语），突出 iOS 的
+// "证书信任设置 → 完全信任"这一最容易被忽略的步骤。
+func (h *handler) serveCertInstallPage(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(`<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WProxyman Certificate Install</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;background:#1a1b1e;color:#e6e6e6;margin:0;padding:24px;line-height:1.6}
+.card{max-width:640px;margin:0 auto;background:#232428;border:1px solid #33363b;border-radius:10px;padding:24px}
+h1{font-size:20px;margin:0 0 8px}
+h2{font-size:15px;margin:20px 0 8px;color:#8ab4f8}
+ol{margin:0;padding-left:20px}
+li{margin:6px 0}
+a{color:#8ab4f8;word-break:break-all}
+code{background:#00000055;border:1px solid #33363b;border-radius:4px;padding:1px 6px;font-family:ui-monospace,Consolas,monospace;font-size:13px}
+.warn{background:#3a2e1a;border:1px solid #6b5418;border-radius:8px;padding:10px 14px;margin-top:16px;font-size:14px;color:#f0d78a}
+.btn{display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;padding:10px 18px;border-radius:8px;margin:12px 0;font-weight:600}
+.lang{color:#8b8f98;font-size:13px;margin-bottom:12px}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>WProxyman 证书安装 / Certificate Install</h1>
+<div class="lang">请确认手机已通过本代理上网后，再下载并信任证书。</div>
+<a class="btn" href="` + certDownloadPath + `">下载证书 / Download Certificate</a>
+
+<h2>iOS</h2>
+<ol>
+<li>点上方按钮下载证书（若未自动弹窗，用 Safari 打开本页再试）；</li>
+<li>设置 → 通用 → VPN 与设备管理 → 安装描述文件，完成安装；</li>
+<li><strong>关键：</strong>设置 → 通用 → 关于本机 → <strong>证书信任设置（Certificate Trust Settings）</strong> → 打开 WProxyman CA 的<strong>完全信任（Full Trust）</strong>开关（否则 HTTPS 会提示"证书不正确"）；</li>
+<li>完成后即可解密抓包。</li>
+</ol>
+
+<h2>Android</h2>
+<ol>
+<li>点上方按钮下载证书（.pem 或 .cer）；</li>
+<li>设置 → 安全 → 加密与凭据 → 安装证书 → CA 证书 → 选择刚下载的文件；</li>
+<li>按系统提示输入锁屏密码确认；</li>
+<li>完成后即可解密抓包。</li>
+</ol>
+
+<div class="warn">若仍提示"证书不正确"：请确认 ① 已开启 iOS 完全信任；② 证书是本次下载的最新文件；③ 部分 App 做了证书固定（pinning），此类流量无法解密。</div>
+</div>
+</body>
+</html>
+`))
 }
 
 // sslProxyEnabled 查询该主机是否启用 MITM 解密。

@@ -157,7 +157,7 @@ export const en = {
     allowLANSaved: 'Saved',
     allowLANSaveFailed: 'Failed to save LAN settings',
     certDownload: 'CA certificate download',
-    certDownloadHint: 'On the phone, open the URL below in a browser (via this proxy) to download and install the CA certificate.',
+    certDownloadHint: 'On the phone, open the URL below in a browser (via this proxy). iOS: after installing the profile, also enable Full Trust in Settings → General → About → Certificate Trust Settings. Android: install as a CA certificate.',
     certDownloadPortHint: 'Start the proxy to see download links.',
     sessions: 'Sessions',
     saveSession: 'Save Session',
