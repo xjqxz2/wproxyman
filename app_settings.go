@@ -67,8 +67,18 @@ func (a *App) GetSettings() Settings {
 }
 
 // SetSettings persists updated settings.
+// 注意：当 AllowLAN 变化且代理正在运行时，必须重启代理以应用新的监听地址
+// （127.0.0.1 ↔ 0.0.0.0）——否则局域网设备会因代理仍只监听回环而连不上
+// （"找不到服务器"）。重启在解锁后进行，保持端口不变。
 func (a *App) SetSettings(s Settings) {
 	a.mu.Lock()
+	lanChanged := a.settings.AllowLAN != s.AllowLAN
+	var runningPort int
+	var running bool
+	if a.proxySrv != nil && a.proxySrv.IsRunning() {
+		running = true
+		runningPort = a.proxySrv.Port()
+	}
 	a.settings.Theme = s.Theme
 	a.settings.AllowLAN = s.AllowLAN
 	if s.MaxBodyBytes > 0 {
@@ -76,6 +86,13 @@ func (a *App) SetSettings(s Settings) {
 	}
 	a.mu.Unlock()
 	_ = a.saveSettings()
+
+	if lanChanged && running {
+		a.StopProxy()
+		if _, err := a.startProxy(runningPort); err != nil {
+			println("WProxyman: failed to restart proxy after AllowLAN change:", err.Error())
+		}
+	}
 }
 
 // ApplyToolConfig updates the tools engine configuration.

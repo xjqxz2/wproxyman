@@ -320,12 +320,15 @@ if (maxBodyBytes === settings.maxBodyBytes) return;
 
   // handleAllowLAN — 切换局域网连接开关（Allow LAN）并保存。
   // 配合 handleBodyBlur 的保存模式：先写后端，成功后更新 store 与提示。
+  // 后端 SetSettings 会在代理运行时自动重启代理以应用新监听地址，
+  // 这里顺带刷新代理状态（端口/运行标志可能因重启而变化）。
   const handleAllowLAN = async (on: boolean) => {
     if (!settings || on === settings.allowLAN) return;
     const next: Settings = { ...settings, allowLAN: on };
     try {
       await api.setSettings(next);
       setSettings(next);
+      await refreshProxy();
       setLanMsg({ text: t('settings.allowLANSaved'), ok: true });
     } catch (err) {
       console.error('Failed to save allowLAN', err);
