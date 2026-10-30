@@ -30,6 +30,22 @@ type WSMessage struct {
 	Timestamp int64  `json:"timestamp"` // 接收时间（unix 毫秒）
 }
 
+// SSEMessage 表示流式响应里的一条事件。
+//
+// 对 text/event-stream 来说就是一次 dispatch（空行分隔的一帧）；对 NDJSON
+// 来说是一行。原始字节只保留在 Flow.ResponseBody 里（受 MaxBodyBytes 限制），
+// 这里保存的是解析后的结构化内容，便于前端做时间线与"累积还原"。
+type SSEMessage struct {
+	Seq     int    `json:"seq"`               // 从 1 开始的序号
+	Event   string `json:"event,omitempty"`   // event: 字段；缺省为 "message"
+	Data    string `json:"data"`              // data 拼接结果（多行以 \n 连接）
+	ID      string `json:"id,omitempty"`      // id: 字段
+	Retry   int    `json:"retry,omitempty"`   // retry: 字段（毫秒）
+	Comment string `json:"comment,omitempty"` // 注释行（以 ':' 开头，常用于心跳）
+	AtMs    int64  `json:"atMs"`              // 相对流开始的毫秒偏移
+	Size    int    `json:"size"`              // 该帧原始字节数（含分隔空行）
+}
+
 // MarshalBody 将字节体编码为 base64 字符串，用于 JSON 传输。
 func MarshalBody(b []byte) string {
 	if len(b) == 0 {
@@ -70,12 +86,12 @@ type Flow struct {
 	TLS         bool   `json:"tls"`         // 是否经 MITM 解密
 
 	// Request（请求部分）
-	RequestHeaders    []Header `json:"requestHeaders"`
-	RequestBody       []byte   `json:"requestBody"`
-	RequestSize       int64    `json:"requestSize"`
-	RequestMimeType   string   `json:"requestMimeType"`
-	RequestCookies    []Cookie `json:"requestCookies,omitempty"`
-	RequestTruncated  bool     `json:"requestTruncated"`
+	RequestHeaders   []Header `json:"requestHeaders"`
+	RequestBody      []byte   `json:"requestBody"`
+	RequestSize      int64    `json:"requestSize"`
+	RequestMimeType  string   `json:"requestMimeType"`
+	RequestCookies   []Cookie `json:"requestCookies,omitempty"`
+	RequestTruncated bool     `json:"requestTruncated"`
 
 	// Response（响应部分；未完成/出错时 ResponseStatus 为 0）
 	ResponseStatus    int      `json:"responseStatus"`
@@ -97,8 +113,20 @@ type Flow struct {
 	WebSocketClosed bool        `json:"webSocketClosed"`
 	WebSocketMsgs   []WSMessage `json:"webSocketMessages,omitempty"`
 
+	// Stream（流式响应：SSE / NDJSON / 分块长连接）
+	// 流式响应不缓冲整包，边转发边解析：客户端实时收到数据，同时把解析出的
+	// 事件累积到 SSEMsgs 供前端做时间线与"累积还原"。
+	IsStream    bool         `json:"isStream,omitempty"`
+	StreamKind  string       `json:"streamKind,omitempty"` // "sse" | "ndjson"
+	StreamEnded bool         `json:"streamEnded,omitempty"`
+	FirstByteAt int64        `json:"firstByteAt,omitempty"` // 收到上游首字节的时间（unix 毫秒）
+	SSEMsgs     []SSEMessage `json:"sseMessages,omitempty"` // 已解析的事件（受 MaxStreamEvents 限制）
+
+	// StreamTruncated 表示事件记录条数已达上限（继续转发，只是不再记录）。
+	StreamTruncated bool `json:"streamTruncated,omitempty"`
+
 	// State（状态）
-	Error    string `json:"error,omitempty"` // 非空表示请求失败（如超时、连接拒绝）
+	Error    string `json:"error,omitempty"`    // 非空表示请求失败（如超时、连接拒绝）
 	ToolType string `json:"toolType,omitempty"` // 生效的工具标识
 	IsPinned bool   `json:"isPinned"`
 	IsSaved  bool   `json:"isSaved"` // 已持久化到保存的会话

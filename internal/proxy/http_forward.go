@@ -114,14 +114,29 @@ func (h *handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Forward upstream.
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.RequestTimeout)
+	//
+	// 超时分两段：先用 headerTimer 限制"等待响应头"的时长；响应头到达后，
+	// 非流式响应的整体读取再给一个同样的上限；**流式响应不设总时长上限**——
+	// SSE / LLM 流可以持续几分钟甚至更久，用整体超时会把它拦腰掐断
+	// （结束条件交给客户端断开或上游 EOF）。
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	headerTimer := time.AfterFunc(cfg.RequestTimeout, cancel)
 	resp, err := h.server.transport().RoundTrip(outReq.WithContext(ctx))
+	headerTimer.Stop()
 	if err != nil {
 		h.failFlow(w, f, emit, err.Error())
 		return
 	}
 	defer resp.Body.Close()
+
+	// 流式响应（SSE / NDJSON）：边转发边解析，不缓冲整包。
+	if kind := streamKindFor(resp.Header.Get("Content-Type")); kind != "" {
+		h.streamResponse(w, r, f, resp, kind, cfg, emit)
+		return
+	}
+	bodyTimer := time.AfterFunc(cfg.RequestTimeout, cancel)
+	defer bodyTimer.Stop()
 
 	// Stream + capture the response, then run the response tool pipeline
 	// before writing to the client.
@@ -168,10 +183,9 @@ func (h *handler) readRequestBody(f *models.Flow, body io.ReadCloser, contentLen
 	return spool, nil
 }
 
-// captureResponse reads the upstream response body. If the body fits within
-// maxBytes it is fully buffered into the flow (returning true so response
-// tools may run). Oversized bodies stream straight through (returning false).
-func (h *handler) captureResponse(f *models.Flow, resp *http.Response, maxBytes int64) bool {
+// captureResponseHead 记录响应行、响应头、MIME 与 Cookie（不含正文）。
+// 缓冲路径与流式路径共用。
+func (h *handler) captureResponseHead(f *models.Flow, resp *http.Response) {
 	f.ResponseStatus = resp.StatusCode
 	f.ResponseReason = resp.Status
 	if i := strings.Index(f.ResponseReason, " "); i >= 0 {
@@ -180,6 +194,13 @@ func (h *handler) captureResponse(f *models.Flow, resp *http.Response, maxBytes 
 	f.ResponseHeaders = headerFromTextproto(resp.Header)
 	f.ResponseMimeType = sniffMime(resp.Header.Get("Content-Type"), resp.Header.Get("Content-Disposition"))
 	f.ResponseCookies = cookiesFromPairs(resp.Cookies())
+}
+
+// captureResponse reads the upstream response body. If the body fits within
+// maxBytes it is fully buffered into the flow (returning true so response
+// tools may run). Oversized bodies stream straight through (returning false).
+func (h *handler) captureResponse(f *models.Flow, resp *http.Response, maxBytes int64) bool {
+	h.captureResponseHead(f, resp)
 
 	if resp.Body == nil {
 		return true
@@ -206,6 +227,142 @@ func (h *handler) captureResponse(f *models.Flow, resp *http.Response, maxBytes 
 		f.ResponseSize = int64(len(buf))
 	}
 	return true
+}
+
+// streamResponse 边转发边解析流式响应（SSE / NDJSON）。
+//
+// 与缓冲路径的三点区别：
+//   - 读到即写、写完即 Flush：客户端实时看到数据，不再等流结束；
+//   - MaxBodyBytes 只限制"保存到 Flow 的字节数"，不限制转发（旧行为会把
+//     客户端收到的数据也一起截断）；
+//   - 跳过响应阶段的工具管线（Rules / 断点 / 脚本都需要完整正文，对无界流
+//     不适用），改为把解析出的事件增量推给前端。
+func (h *handler) streamResponse(w http.ResponseWriter, r *http.Request, f *models.Flow, resp *http.Response, kind string, cfg Config, emit func(string)) {
+	h.captureResponseHead(f, resp)
+	f.IsStream = true
+	f.StreamKind = kind
+	f.FirstByteAt = time.Now().UnixMilli()
+
+	hdr := w.Header()
+	for _, hh := range f.ResponseHeaders {
+		if isHopByHop(hh.Name) {
+			continue
+		}
+		hdr.Add(hh.Name, hh.Value)
+	}
+	// 流长度未知：交给 Go 用 chunked（HTTP/1.1）或 DATA 帧（HTTP/2）分块，
+	// 不能带 Content-Length，否则客户端会一直等到长度满足。
+	hdr.Del("Content-Length")
+
+	status := f.ResponseStatus
+	if status == 0 {
+		status = http.StatusOK
+	}
+	noBody := r.Method == http.MethodHead || status == http.StatusNoContent || status == http.StatusNotModified
+	w.WriteHeader(status)
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		// 立刻把响应头发出去：否则客户端连响应头都要等到第一块正文。
+		flusher.Flush()
+	}
+	if noBody {
+		f.StreamEnded = true
+		f.CompletedAt = time.Now().UnixMilli()
+		f.Duration = f.CompletedAt - f.StartedAt
+		emit("completed")
+		return
+	}
+
+	parser := newStreamParser(kind, time.Now())
+	readBuf := make([]byte, 16*1024)
+	var stored int64
+	var pending []models.SSEMessage
+	lastPush := time.Now()
+
+	// push 批量推送增量事件：逐条过桥在长流上太贵，按"攒够 16 条或间隔
+	// 100ms"打包一次，结束时强制推送。
+	push := func(force bool) {
+		if len(pending) == 0 {
+			return
+		}
+		if !force && len(pending) < 16 && time.Since(lastPush) < 100*time.Millisecond {
+			return
+		}
+		if cfg.OnStream != nil {
+			cfg.OnStream(f, pending)
+		}
+		pending = nil
+		lastPush = time.Now()
+	}
+
+	record := func(msgs []models.SSEMessage) {
+		if len(msgs) == 0 {
+			return
+		}
+		room := MaxStreamEvents - len(f.SSEMsgs)
+		if room <= 0 {
+			f.StreamTruncated = true
+			return
+		}
+		if len(msgs) > room {
+			msgs = msgs[:room]
+			f.StreamTruncated = true
+		}
+		f.SSEMsgs = append(f.SSEMsgs, msgs...)
+		pending = append(pending, msgs...)
+	}
+
+	// 流量来源：优先沿用请求上下文，客户端断开时能尽早结束（避免上游被
+	// 一直读下去）。
+	for {
+		n, err := resp.Body.Read(readBuf)
+		if n > 0 {
+			chunk := readBuf[:n]
+			f.ResponseSize += int64(n)
+			// 只限制保存，不影响转发。
+			if stored < cfg.MaxBodyBytes {
+				room := cfg.MaxBodyBytes - stored
+				if int64(len(chunk)) <= room {
+					f.ResponseBody = append(f.ResponseBody, chunk...)
+					stored += int64(len(chunk))
+				} else {
+					f.ResponseBody = append(f.ResponseBody, chunk[:room]...)
+					stored = cfg.MaxBodyBytes
+					f.ResponseTruncated = true
+				}
+			} else {
+				f.ResponseTruncated = true
+			}
+
+			record(parser.Feed(chunk, time.Now()))
+			push(false)
+
+			if _, werr := w.Write(chunk); werr != nil {
+				// 客户端提前断开（关页面/取消请求）是常见情况，不算错误：
+				// 停止转发并收尾即可。
+				break
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if err != nil {
+			if err != io.EOF {
+				f.Error = err.Error()
+			}
+			break
+		}
+	}
+
+	record(parser.Flush(time.Now()))
+	push(true)
+	if f.ResponseSize == 0 && resp.ContentLength > 0 {
+		f.ResponseSize = resp.ContentLength
+	}
+	f.StreamEnded = true
+	f.CompletedAt = time.Now().UnixMilli()
+	f.Duration = f.CompletedAt - f.StartedAt
+	emit("completed")
 }
 
 // runRequestInterceptors invokes the tool pipeline on the request.

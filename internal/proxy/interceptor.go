@@ -62,6 +62,10 @@ type Config struct {
 	Interceptor Interceptor
 	// OnFlow 接收 Flow 生命周期事件（可为 nil）。
 	OnFlow FlowCallback
+	// OnStream 在流式响应（SSE / NDJSON）期间被调用，携带本次新解析出的事件。
+	// 与 OnFlow 分开的原因：流式响应每来一块数据都重推整条 flow（含不断增长的
+	// 正文）成本太高，增量事件才是前端实时渲染需要的。可为 nil。
+	OnStream func(f *models.Flow, msgs []models.SSEMessage)
 	// WrapConn 可选地包装接受的客户端连接（网络限速等）。可为 nil。
 	WrapConn func(c net.Conn) net.Conn
 	// MaxBodyBytes 限制请求/响应体保留的最大字节数。

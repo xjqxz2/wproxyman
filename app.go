@@ -459,6 +459,7 @@ func (a *App) startProxy(port int) (int, error) {
 		CA:          a.ca,
 		CACertPEM:   certPEM,
 		OnFlow:      a.onFlow,
+		OnStream:    a.onStream,
 		WrapConn:    a.engine.WrapConn,
 		Interceptor: a.engine,
 		SSLProxyEnabled: func(host string) bool {
@@ -601,6 +602,23 @@ func (a *App) onFlow(f *models.Flow, phase string) {
 		a.mu.Unlock()
 		a.emit("flow:completed", f)
 	}
+}
+
+// onStream 推送流式响应（SSE / NDJSON）的增量事件。
+//
+// 不重推整条 flow：流式响应期间正文与事件都在增长，整条重推会让桥接数据量
+// 随流长度平方级放大。前端收到增量后自行追加，流结束时再由 "completed"
+// 一次性带上完整（受上限约束的）内容。
+func (a *App) onStream(f *models.Flow, msgs []models.SSEMessage) {
+	a.emit("flow:stream", map[string]interface{}{
+		"id":                f.ID,
+		"messages":          msgs,
+		"size":              f.ResponseSize,
+		"firstByteAt":       f.FirstByteAt,
+		"streamKind":        f.StreamKind,
+		"truncated":         f.StreamTruncated,
+		"responseTruncated": f.ResponseTruncated,
+	})
 }
 
 func (a *App) emitProxyStatus() {
