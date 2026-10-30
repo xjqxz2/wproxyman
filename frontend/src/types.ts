@@ -227,6 +227,30 @@ export interface Settings {
   streamRules?: StreamRule[]; // 非标流式协议的自定义解析规则
 }
 
+// MCPAuditEntry — 一次 MCP 工具调用的审计记录（不包含参数内容）。
+export interface MCPAuditEntry {
+  at: string; // RFC3339 时间
+  tool: string;
+  tier: 'read' | 'write' | 'dangerous';
+  argsHash: string;
+  argsLen: number;
+  ok: boolean;
+  error?: string;
+}
+
+// MCPStatus — MCP 服务状态（设置面板用）。
+export interface MCPStatus {
+  enabled: boolean;
+  running: boolean;
+  url: string;
+  port: number;
+  token: string;
+  allowWrite: boolean;
+  allowDangerous: boolean;
+  toolCount: number;
+  audit: MCPAuditEntry[] | null;
+}
+
 // ProxyStatus — 代理运行状态（是否运行、监听端口、系统代理开关、最近一次启动失败原因）。
 export interface ProxyStatus {
   running: boolean;

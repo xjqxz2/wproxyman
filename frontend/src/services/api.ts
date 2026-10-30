@@ -104,6 +104,15 @@ export const api = {
   setSettings: (s: Settings) => App.SetSettings(s as never),
   getLANIPs: () => App.GetLANIPs(),
 
+  // ---- MCP（让 AI 客户端控制本应用）----
+  // getMCPStatus：返回开关、URL、令牌、档位与最近审计。
+  getMCPStatus: () => App.GetMCPStatus() as unknown as Promise<import('../types').MCPStatus>,
+  // setMCPEnabled：开关 MCP 服务并保存档位设置（port 传 0 表示沿用现有端口）。
+  setMCPEnabled: (enabled: boolean, port: number, allowWrite: boolean, allowDangerous: boolean) =>
+    App.SetMCPEnabled(enabled, port, allowWrite, allowDangerous),
+  // rotateMCPToken：轮换访问令牌（旧令牌立即失效，无需重启服务）。
+  rotateMCPToken: () => App.RotateMCPToken(),
+
   // ---- 下载 ----
   // saveFlowContent：将请求或响应内容保存到文件（side 指定 request/response）。
   saveFlowContent: (flowId: string, side: 'request' | 'response') => App.SaveFlowContent(flowId, side),

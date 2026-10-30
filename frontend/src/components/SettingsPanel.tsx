@@ -8,7 +8,7 @@ import { X, ShieldCheck, ShieldAlert, Download, Upload, Save, FolderOpen, Monito
 import { useApp } from '../store';
 import { api } from '../services/api';
 import { useI18n } from '../i18n';
-import type { ProxyStatus, Settings, StreamRule } from '../types';
+import type { MCPStatus, ProxyStatus, Settings, StreamRule } from '../types';
 
 // MB —1 MiB 瀛楄妭鏁帮紙姝ｆ枃澶у皬涓婇檺鐨勬崲绠楀熀鍑嗭級銆
 const MB = 1048576;
@@ -97,6 +97,12 @@ const [bodyInput, setBodyInput] = useState(() => String(Math.round((useApp.getSt
   const [rules, setRules] = useState<StreamRule[]>(() => useApp.getState().settings?.streamRules ?? []);
   const [rulesDirty, setRulesDirty] = useState(false);
   const [rulesMsg, setRulesMsg] = useState<OpMessage>(null);
+
+  // ---- MCP（AI 控制）区块状态 ----
+  const [mcp, setMcp] = useState<MCPStatus | null>(null);
+  const [mcpPortInput, setMcpPortInput] = useState('10087');
+  const [mcpBusy, setMcpBusy] = useState(false);
+  const [mcpMsg, setMcpMsg] = useState<OpMessage>(null);
 
   // ---- Devices 鍖哄潡鐨勬湰鍦扮姸鎬?----
   // 灞€鍩熺綉 IP 鍒楄〃涓庡姞杞借垂璐ユ彁绀恒€
@@ -426,6 +432,101 @@ const handleRemoveCert = async () => {
     } catch (err) {
       console.error('Failed to save stream rules', err);
       setRulesMsg({ text: `${t('settings.rulesSaveFailed')} ${String(err)}`, ok: false });
+    }
+  };
+
+  // --- MCP：加载状态与增删改 ---
+
+  const refreshMCP = useCallback(async (): Promise<MCPStatus | null> => {
+    try {
+      const st = await api.getMCPStatus();
+      setMcp(st);
+      if (st && st.port) setMcpPortInput(String(st.port));
+      return st;
+    } catch (err) {
+      console.error('Failed to load MCP status', err);
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    // 打开设置面板时拉一次；关闭后不再轮询（审计不是实时看板）。
+    refreshMCP();
+  }, [refreshMCP]);
+
+  const applyMCP = async (enabled: boolean, port: number, allowWrite: boolean, allowDangerous: boolean) => {
+    setMcpBusy(true);
+    setMcpMsg(null);
+    try {
+      await api.setMCPEnabled(enabled, port, allowWrite, allowDangerous);
+      await refreshMCP();
+      setMcpMsg({ text: t('settings.mcpSaved'), ok: true });
+    } catch (err) {
+      console.error('Failed to update MCP settings', err);
+      setMcpMsg({ text: `${t('settings.mcpSaveFailed')} ${String(err)}`, ok: false });
+      await refreshMCP();
+    } finally {
+      setMcpBusy(false);
+    }
+  };
+
+  const handleMCPToggle = async () => {
+    if (!mcp) return;
+    const port = Number(mcpPortInput);
+    if (mcp.enabled) {
+      await applyMCP(false, mcp.port, mcp.allowWrite, mcp.allowDangerous);
+      return;
+    }
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      setMcpMsg({ text: t('settings.portInvalid'), ok: false });
+      return;
+    }
+    await applyMCP(true, port, mcp.allowWrite, mcp.allowDangerous);
+  };
+
+  const handleMCPTier = async (kind: 'write' | 'dangerous', on: boolean) => {
+    if (!mcp) return;
+    await applyMCP(
+      mcp.enabled,
+      mcp.port,
+      kind === 'write' ? on : mcp.allowWrite,
+      kind === 'dangerous' ? on : mcp.allowDangerous,
+    );
+  };
+
+  const handleMCPPortBlur = async () => {
+    if (!mcp || !mcp.enabled) return;
+    const port = Number(mcpPortInput);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      setMcpMsg({ text: t('settings.portInvalid'), ok: false });
+      setMcpPortInput(String(mcp.port));
+      return;
+    }
+    if (port === mcp.port) return;
+    await applyMCP(true, port, mcp.allowWrite, mcp.allowDangerous);
+  };
+
+  const handleMCPRotate = async () => {
+    setMcpBusy(true);
+    setMcpMsg(null);
+    try {
+      await api.rotateMCPToken();
+      await refreshMCP();
+      setMcpMsg({ text: t('settings.mcpRotated'), ok: true });
+    } catch (err) {
+      console.error('Failed to rotate MCP token', err);
+      setMcpMsg({ text: `${t('settings.mcpSaveFailed')} ${String(err)}`, ok: false });
+    } finally {
+      setMcpBusy(false);
+    }
+  };
+
+  const copyText = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setMcpMsg({ text: t('settings.mcpCopy') + ' ✓', ok: true });
+    } catch (err) {
+      console.error('clipboard failed', err);
     }
   };
 
@@ -762,6 +863,131 @@ if (e.target === e.currentTarget) onClose();
               </button>
               {rulesMsg && <span style={statusStyle(rulesMsg.ok)}>{rulesMsg.text}</span>}
             </div>
+          </div>
+
+          {/* ===== MCP（AI 控制）===== */}
+          <div className="tool-card">
+            <div className="tc-head">
+              <span className="tc-title">{t('settings.mcp')}</span>
+              {mcp && (
+                <span className={`tag ${mcp.running ? 'green' : 'amber'}`}>
+                  {mcp.running ? `${mcp.toolCount} ${t('settings.mcpTools')}` : t('settings.notRunning')}
+                </span>
+              )}
+            </div>
+            <div style={hintStyle}>{t('settings.mcpHint')}</div>
+
+            {!mcp ? (
+              <div style={hintStyle}>{t('settings.mcpUnavailable')}</div>
+            ) : (
+              <>
+                {/* 开关 + 端口 */}
+                <div style={{ ...rowStyle, marginTop: 8 }}>
+                  <span style={{ color: 'var(--text-secondary)' }}>{t('settings.mcpEnabled')}</span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={mcp.enabled}
+                    aria-label={t('settings.mcpEnabled')}
+                    className={`switch${mcp.enabled ? ' on' : ''}`}
+                    onClick={handleMCPToggle}
+                    disabled={mcpBusy}
+                  />
+                  <span style={{ color: 'var(--text-secondary)', marginLeft: 10 }}>{t('settings.mcpPort')}</span>
+                  <input
+                    type="number"
+                    className="input"
+                    style={{ width: 90 }}
+                    min={1}
+                    max={65535}
+                    value={mcpPortInput}
+                    onChange={(e) => setMcpPortInput(e.target.value)}
+                    onBlur={handleMCPPortBlur}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                    }}
+                    disabled={!mcp.enabled || mcpBusy}
+                    aria-label={t('settings.mcpPort')}
+                  />
+                </div>
+
+                {/* 接入信息：URL 与令牌 */}
+                {mcp.enabled && mcp.url && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ ...hintStyle, marginTop: 0, minWidth: 70 }}>{t('settings.mcpURL')}</span>
+                      <code style={{ ...monoStyle, flex: 1 }}>{mcp.url}</code>
+                      <button type="button" className="btn" onClick={() => copyText(mcp.url)}>
+                        {t('settings.mcpCopy')}
+                      </button>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ ...hintStyle, marginTop: 0, minWidth: 70 }}>{t('settings.mcpToken')}</span>
+                      <code style={{ ...monoStyle, flex: 1 }}>{mcp.token}</code>
+                      <button type="button" className="btn" onClick={() => copyText(mcp.token)}>
+                        {t('settings.mcpCopy')}
+                      </button>
+                      <button type="button" className="btn" onClick={handleMCPRotate} disabled={mcpBusy}>
+                        {t('settings.mcpRotate')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* 权限档 */}
+                <div style={{ ...rowStyle, marginTop: 10 }}>
+                  <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t('settings.mcpAllowWrite')}</span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={mcp.allowWrite}
+                    aria-label={t('settings.mcpAllowWrite')}
+                    className={`switch${mcp.allowWrite ? ' on' : ''}`}
+                    onClick={() => handleMCPTier('write', !mcp.allowWrite)}
+                    disabled={!mcp.enabled || mcpBusy}
+                  />
+                  <span style={{ color: 'var(--text-secondary)', fontSize: 12, marginLeft: 12 }}>
+                    {t('settings.mcpAllowDangerous')}
+                  </span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={mcp.allowDangerous}
+                    aria-label={t('settings.mcpAllowDangerous')}
+                    className={`switch${mcp.allowDangerous ? ' on' : ''}`}
+                    onClick={() => handleMCPTier('dangerous', !mcp.allowDangerous)}
+                    disabled={!mcp.enabled || mcpBusy}
+                  />
+                </div>
+                <div style={hintStyle}>
+                  {mcp.allowDangerous
+                    ? t('settings.mcpAllowDangerousHint')
+                    : mcp.allowWrite
+                      ? t('settings.mcpAllowWriteHint')
+                      : t('settings.mcpReadOnlyNote')}
+                </div>
+
+                {/* 审计 */}
+                <div style={{ ...hintStyle, marginTop: 8 }}>{t('settings.mcpAudit')}</div>
+                {mcp.audit && mcp.audit.length > 0 ? (
+                  <div style={{ maxHeight: 140, overflow: 'auto', marginTop: 4 }}>
+                    {mcp.audit.slice(0, 20).map((a, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 8, ...monoStyle, fontSize: 11.5, padding: '2px 0' }}>
+                        <span style={{ color: 'var(--text-tertiary)' }}>{new Date(a.at).toLocaleTimeString()}</span>
+                        <span className={a.ok ? 'tag green' : 'tag amber'}>{a.tier}</span>
+                        <span style={{ flex: 1 }}>{a.tool}</span>
+                        <span style={{ color: a.ok ? 'var(--ok)' : 'var(--error)' }}>
+                          {a.ok ? 'ok' : a.error || 'failed'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={hintStyle}>{t('settings.mcpNoAudit')}</div>
+                )}
+              </>
+            )}
+            {mcpMsg && <div style={statusStyle(mcpMsg.ok)}>{mcpMsg.text}</div>}
           </div>
 
           {/* ===== Devices锛堣澶囷級鍖哄潡 ===== */}
