@@ -87,50 +87,55 @@ const setSettingsOpen = useApp((s) => s.setSettingsOpen);
 
   return (
     <div className="toolbar" onDoubleClick={onToolbarDoubleClick}>
-      {/* 捕获开关：运行中显示 Pause（暂停），停止时显示 Play（开始）。 */}
-      <button
-        type="button"
-        className={`tb-btn${proxy.running ? ' active' : ''}`}
-        onClick={toggleProxy}
-        title={proxy.running ? t('toolbar.stopCapture') : t('toolbar.startCapture')}
-        aria-pressed={proxy.running}
-        aria-label={proxy.running ? t('toolbar.stopCapture') : t('toolbar.startCapture')}
-      >
-        {proxy.running ? <Pause size={16} fill="currentColor" /> : <Play size={16} />}
-      </button>
+      {/* 中间列（顶栏水平居中）：抓包开关 + 清空 + 置顶 + 搜索框。
+          居中由 .toolbar 的三列网格（1fr auto 1fr）实现，与右侧按钮数量无关。 */}
+      <div className="tb-center">
+        {/* 捕获开关：运行中显示 Pause（暂停），停止时显示 Play（开始）。 */}
+        <button
+          type="button"
+          className={`tb-btn${proxy.running ? ' active' : ''}`}
+          onClick={toggleProxy}
+          title={proxy.running ? t('toolbar.stopCapture') : t('toolbar.startCapture')}
+          aria-pressed={proxy.running}
+          aria-label={proxy.running ? t('toolbar.stopCapture') : t('toolbar.startCapture')}
+        >
+          {proxy.running ? <Pause size={16} fill="currentColor" /> : <Play size={16} />}
+        </button>
 
-      {/* 清空流量按钮：列表为空时禁用。 */}
-      <button
-        type="button"
-        className="tb-btn"
-        onClick={clearFlows}
-        disabled={flowCount === 0}
-        title={t('toolbar.clearFlows')}
-        aria-label={t('toolbar.clearFlows')}
-      >
-        <Trash2 size={16} />
-      </button>
+        {/* 清空流量按钮：列表为空时禁用。 */}
+        <button
+          type="button"
+          className="tb-btn"
+          onClick={clearFlows}
+          disabled={flowCount === 0}
+          title={t('toolbar.clearFlows')}
+          aria-label={t('toolbar.clearFlows')}
+        >
+          <Trash2 size={16} />
+        </button>
 
-      {/* 置顶按钮：当前为占位（不可交互，仅供展示）。 */}
-      <button type="button" className="tb-btn" tabIndex={-1} aria-hidden="true" title={t('sidebar.pinned')}>
-        <Pin size={16} />
-      </button>
+        {/* 置顶按钮：当前为占位（不可交互，仅供展示）。 */}
+        <button type="button" className="tb-btn" tabIndex={-1} aria-hidden="true" title={t('sidebar.pinned')}>
+          <Pin size={16} />
+        </button>
 
-      <span className="tb-sep" />
+        <span className="tb-sep" />
 
-      {/* 搜索框：实时更新 store 中的 searchQuery，列表随之过滤。 */}
-      <div className="tb-search">
-        <Search size={14} />
-        <input
-          type="text"
-          value={searchQuery}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={t('toolbar.search')}
-          spellCheck={false}
-          aria-label={t('toolbar.searchFlows')}
-        />
+        {/* 搜索框：实时更新 store 中的 searchQuery，列表随之过滤。 */}
+        <div className="tb-search">
+          <Search size={14} />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t('toolbar.search')}
+            spellCheck={false}
+            aria-label={t('toolbar.searchFlows')}
+          />
+        </div>
       </div>
 
+      {/* 右列（靠右）：SSL 解密、网络条件（占位）、设置。 */}
       <div className="tb-right">
         {/* SSL 代理开关：高亮表示当前全局 SSL 解密开启。 */}
         <button

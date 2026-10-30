@@ -107,12 +107,16 @@ body,
 }
 
 /* --- Toolbar --- */
+/* 顶栏采用三列网格：左右两列等宽（1fr），中间列由内容决定（auto），
+   因此中间的抓包控制组始终在顶栏水平居中，与右侧按钮数量无关。
+   左列留空（macOS 红绿灯浮在其上，居中组不会与之重叠）。 */
 .toolbar {
   height: var(--toolbar-h);
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  gap: 4px;
-  padding: 0 10px;
+  column-gap: 4px;
+  padding: 0 12px;
   background: var(--bg-toolbar);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -184,8 +188,33 @@ body,
   border-color: var(--border-focus);
 }
 
+/* 居中列里的搜索框需要确定宽度：原先它靠 flex:1 撑满工具栏剩余空间，
+   放进宽度由内容决定的居中组后必须显式给宽度，否则会塌成输入框默认宽度。 */
+.tb-center .tb-search {
+  flex: none;
+  width: 380px;
+}
+/* 窄窗口（最小窗口宽 960）下收窄，避免与右侧按钮抢空间。 */
+@media (max-width: 1080px) {
+  .tb-center .tb-search {
+    width: 260px;
+  }
+}
+
+/* .tb-center — 顶栏中间列：抓包开关（暂停/开始）、清空、置顶 + 搜索框。
+   整组在顶栏水平居中（见 .toolbar 的三列网格）。 */
+.tb-center {
+  grid-column: 2;
+  justify-self: center;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
 .tb-right {
-  margin-left: auto;
+  grid-column: 3;
+  justify-self: end;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -198,15 +227,14 @@ body,
    performWindowDragWithEvent）。该变量会继承，故交互元素必须显式
    覆盖为 none 才能正常点击。
    - Toolbar 整体作为窗口拖拽区（单击拖拽 + 双击由系统处理）；
-   - 左侧预留红绿灯按钮空间（约 72px：三个圆灯 + 边距）；
+   - 左侧不再需要为红绿灯预留内边距：控件组已移到中间列，红绿灯下方是空的
+     左列，天然不会重叠；
    - 所有可交互元素必须 --wails-draggable: none，否则点击/输入失效。 */
 .toolbar {
   --wails-draggable: none;
 }
 [data-platform="mac"] .toolbar {
   --wails-draggable: drag;
-  padding-left: 72px;
-  padding-right: 12px;
 }
 [data-platform="mac"] .toolbar .tb-btn,
 [data-platform="mac"] .toolbar .tb-search,
