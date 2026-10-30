@@ -30,6 +30,13 @@ import (
 var assets embed.FS
 
 func main() {
+	// `wproxyman mcp`：以 stdio 桥的形式运行，供 Claude Desktop 这类只支持
+	// 子进程 stdio 的 MCP 客户端使用（不启动 GUI）。
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		runMCPBridge()
+		return
+	}
+
 	app := NewApp()
 
 	// 被信号终止（kill / 终端 Ctrl-C / 会话注销）时 Wails 不保证调用 OnShutdown，
