@@ -143,11 +143,15 @@
 - [x] `internal/proxy/sse.go`：增量 SSE / NDJSON 解析器（CRLF/CR/LF、多行 data、注释心跳、id/retry、`[DONE]`、跨块 UTF-8、超长行防御）
 - [x] 事件推送：`Config.OnStream` → `flow:stream` 增量事件（按 16 条或 100ms 批量打包，不重推整条 flow）
 - [x] 测试：29 个用例（5 个端到端流式 + 24 个解析器），`go test ./...` 全绿 —— commit `293c535`
-- [ ] OpenAI 兼容预设解析器（`chat.completions` 与 `responses` API）
-- [ ] Anthropic 兼容预设解析器
-- [ ] 自定义 JSONPath 解析规则（存 settings.json，用户可编辑）
-- [ ] 前端 Stream 视图：时间线、原始/累积双视图、TTFB 与速率
-- [ ] 截图验证 + README 章节
+- [x] OpenAI 兼容预设解析器（`chat.completions`：delta.content / reasoning_content / tool_calls 分片按 index 归并 / finish_reason / usage；`responses` API：语义事件）
+- [x] Anthropic 兼容预设解析器（message_start / content_block_* / message_delta；text_delta / thinking_delta / input_json_delta 把 tool_use 参数拼回 JSON）
+- [x] 自定义 JSONPath 解析规则（存 `settings.streamRules`，设置内可增删改；含 matchPath 与 stopValue）
+- [x] 前端 Stream 视图：时间线（偏移/间隔/大小/心跳过滤）+ 累积还原（文本/思维链/工具调用/用量）+ 原始帧，含 TTFB 与速率
+- [x] 截图验证（`verify/stream-*.png`）—— commit `7232c55`
+- [ ] README 章节「调试 LLM 应用」（与 README 重写一起做）
+- [ ] 随下一版发布
+
+**实现上的取舍（记录下来免得以后重复讨论）**：解析放在前端而不是后端，原因是自定义规则要改完即生效、私有协议不该需要重新发版、原始事件本来就存在 flow/会话里可随时重新推导。识别方式是**按报文结构嗅探**而非域名白名单，因此 vLLM / Ollama / one-api 这类自建 OpenAI 兼容服务同样能识别。
 
 ---
 
