@@ -55,9 +55,95 @@ type Tool struct {
 	Annotations map[string]any `json:"annotations,omitempty"`
 }
 
+// HandlerFunc 是自定义工具（包装工具）的实现。
+// 入参是 MCP 的 arguments（一定是合法的 JSON 对象，无参时是 {}）。
+type HandlerFunc func(args json.RawMessage) (any, *Error)
+
+// Param 描述自定义工具的一个参数。比反射更细：可以带描述、枚举、默认值——
+// 这些正是模型选择参数时最需要的信息。
+type Param struct {
+	Name        string
+	Type        string // string | integer | number | boolean | array | object
+	Description string
+	Required    bool
+	Enum        []string // 可选：限定取值
+	Items       string   // Type=array 时元素类型
+	Default     any      // 可选：默认值（会写进 Schema 提示模型）
+}
+
+// SchemaFromParams 由参数列表生成 JSON Schema。
+func SchemaFromParams(params []Param) map[string]any {
+	props := map[string]any{}
+	required := []string{}
+	for _, p := range params {
+		prop := map[string]any{}
+		if p.Type != "" {
+			prop["type"] = p.Type
+		}
+		if p.Description != "" {
+			prop["description"] = p.Description
+		}
+		if len(p.Enum) > 0 {
+			prop["enum"] = p.Enum
+		}
+		if p.Type == "array" {
+			itemType := p.Items
+			if itemType == "" {
+				itemType = "string"
+			}
+			prop["items"] = map[string]any{"type": itemType}
+		}
+		if p.Default != nil {
+			prop["default"] = p.Default
+		}
+		props[p.Name] = prop
+		if p.Required {
+			required = append(required, p.Name)
+		}
+	}
+	return map[string]any{"type": "object", "properties": props, "required": required}
+}
+
+// AddHandler 注册一个自定义工具（不走反射，由 fn 实现）。
+//
+// 用途：反射能覆盖的只是"原样转发到 App 方法"，但有些能力必须重新包装才好用——
+// 例如 list_flows 需要过滤/分页/字段裁剪，get_flow_body 需要分段读正文。
+// 这些工具的参数往往也需要更细的描述与枚举，所以 Schema 由 Param 显式给出。
+func (r *Registry) AddHandler(spec ToolSpec, params []Param, fn HandlerFunc) error {
+	if spec.Name == "" || spec.Method == "" {
+		return fmt.Errorf("mcp: 自定义工具必须有 name 与 method 标识")
+	}
+	if fn == nil {
+		return fmt.Errorf("mcp: 自定义工具 %s 缺少实现", spec.Name)
+	}
+	if _, exists := r.tools[spec.Name]; exists {
+		return fmt.Errorf("mcp: 工具名 %s 重复", spec.Name)
+	}
+	for _, p := range params {
+		switch p.Type {
+		case "", "string", "integer", "number", "boolean", "array", "object":
+		default:
+			return fmt.Errorf("mcp: 工具 %s 的参数 %s 类型非法：%q", spec.Name, p.Name, p.Type)
+		}
+		if p.Name == "" {
+			return fmt.Errorf("mcp: 工具 %s 存在无名参数", spec.Name)
+		}
+	}
+	spec.Params = nil // 自定义工具的参数由 Schema 描述，不参与反射校验
+	r.tools[spec.Name] = &boundTool{
+		spec:    spec,
+		handler: fn,
+		schema:  SchemaFromParams(params),
+	}
+	r.order = append(r.order, spec.Name)
+	sort.Strings(r.order)
+	return nil
+}
+
 type boundTool struct {
-	spec   ToolSpec
-	method reflect.Value
+	spec    ToolSpec
+	handler HandlerFunc // 非 nil 表示自定义工具（不走反射）
+	method  reflect.Value
 	// inTypes 不含接收者：inTypes[i] 对应 spec.Params[i]
 	inTypes []reflect.Type
 	schema  map[string]any
@@ -182,6 +268,10 @@ func (r *Registry) Call(name string, args json.RawMessage) (any, *Error) {
 	// 空参数按空对象处理，便于无参工具调用。
 	if len(args) == 0 {
 		args = json.RawMessage(`{}`)
+	}
+	// 自定义工具：自身负责解析参数（通常反序列化进一个结构体）。
+	if b.handler != nil {
+		return b.handler(args)
 	}
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(args, &raw); err != nil {

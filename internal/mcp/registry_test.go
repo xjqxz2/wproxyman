@@ -39,7 +39,7 @@ func (f *fakeTarget) Cleanup()    { f.cleanupRun = true }
 
 func testSpecs() []ToolSpec {
 	return []ToolSpec{
-		{Name: "list_flows", Method: "GetFlows", Description: "列出流量", Group: "flows", Tier: TierRead},
+		{Name: "get_flows_raw", Method: "GetFlows", Description: "列出流量", Group: "flows", Tier: TierRead},
 		{Name: "set_port", Method: "SetPort", Description: "改端口", Group: "proxy", Tier: TierWrite, Params: []string{"port"}},
 		{Name: "set_pinned", Method: "SetPinned", Description: "置顶", Group: "flows", Tier: TierWrite, Params: []string{"id", "pinned"}},
 		{Name: "save_settings", Method: "SaveSettings", Description: "存设置", Group: "settings", Tier: TierWrite, Params: []string{"settings"}},
@@ -66,7 +66,7 @@ func TestRegistryBuildAndWarnings(t *testing.T) {
 	for _, tool := range r.Tools() {
 		names[tool.Name] = true
 	}
-	for _, want := range []string{"list_flows", "set_port", "set_pinned", "save_settings", "clear_flows"} {
+	for _, want := range []string{"get_flows_raw", "set_port", "set_pinned", "save_settings", "clear_flows"} {
 		if !names[want] {
 			t.Errorf("工具 %s 应在列表里", want)
 		}
@@ -98,7 +98,7 @@ func TestRegistrySchema(t *testing.T) {
 	}
 
 	// 无参工具：properties 为空对象，required 为空数组。
-	lf := byName["list_flows"].InputSchema
+	lf := byName["get_flows_raw"].InputSchema
 	if lf["type"] != "object" {
 		t.Fatalf("list_flows schema type = %v", lf["type"])
 	}
@@ -146,8 +146,8 @@ func TestRegistryAnnotations(t *testing.T) {
 	for _, tool := range r.Tools() {
 		byName[tool.Name] = tool
 	}
-	if byName["list_flows"].Annotations["readOnlyHint"] != true {
-		t.Fatalf("只读工具应带 readOnlyHint：%v", byName["list_flows"].Annotations)
+	if byName["get_flows_raw"].Annotations["readOnlyHint"] != true {
+		t.Fatalf("只读工具应带 readOnlyHint：%v", byName["get_flows_raw"].Annotations)
 	}
 	if byName["clear_flows"].Annotations["destructiveHint"] != true {
 		t.Fatalf("危险工具应带 destructiveHint：%v", byName["clear_flows"].Annotations)
@@ -159,7 +159,7 @@ func TestRegistryCall(t *testing.T) {
 	r, _, _ := NewRegistry(target, testSpecs())
 
 	// 无参调用 → 返回被调用方法的返回值。
-	res, errObj := r.Call("list_flows", nil)
+	res, errObj := r.Call("get_flows_raw", nil)
 	if errObj != nil {
 		t.Fatalf("list_flows 调用失败：%v", errObj)
 	}
