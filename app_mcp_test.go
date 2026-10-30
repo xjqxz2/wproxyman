@@ -30,6 +30,14 @@ func TestMCPToolSpecsCoverAppAPI(t *testing.T) {
 		"Cleanup":      "生命周期方法：会让应用退出（注册表也硬性拒绝）",
 		"GetCACertPEM": "返回一大段 PEM，对模型无意义；改为以资源形式提供",
 		"GetFlows":     "被包装工具 list_flows 取代：原方法会把全部流量连同正文一次返回，对模型是上下文炸弹",
+
+		// MCP 自身的管理接口：一律不暴露。
+		// 最要紧的是 SetMCPEnabled —— 它能让 AI 打开 write/dangerous 档位，
+		// 等于自己给自己提权；RotateMCPToken 则可能把客户端自己踢下线。
+		"SetMCPEnabled":  "AI 不得修改自身权限档（自我提权）或启停 MCP 服务",
+		"RotateMCPToken": "会让调用方自己的令牌立即失效（自我锁死）",
+		"GetMCPStatus":   "返回值含访问令牌，不能进入模型上下文",
+		"IsMCPRunning":   "与 GetMCPStatus 重复，且无必要暴露",
 	}
 
 	// 1) App 的每个导出方法要么暴露，要么登记在排除名单里。

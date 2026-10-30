@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -23,6 +24,7 @@ import (
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"wproxyman/internal/cert"
+	"wproxyman/internal/mcp"
 	"wproxyman/internal/models"
 	"wproxyman/internal/proxy"
 	"wproxyman/internal/storage"
@@ -59,6 +61,11 @@ type App struct {
 	// lastProxyErr 记录最近一次启动代理失败的原因（典型场景：偏好端口被
 	// 其他程序占用）。前端据此在设置面板给出"请改端口"的可操作提示。
 	lastProxyErr string
+
+	// MCP 服务（AI 客户端控制本应用）；未启用时均为 nil。
+	mcpServer   *http.Server
+	mcpListener net.Listener
+	mcpService  *mcp.Service
 
 	// cleanupOnce 保证清理逻辑（还原系统代理、停止代理、关闭事件泵）只执行一次：
 	// 正常退出走 Wails 的 OnShutdown，被信号终止走 Cleanup，两者可能都触发。
@@ -166,6 +173,12 @@ func (a *App) startup(ctx context.Context) {
 	} else if a.healStaleSystemProxy() {
 		println("WProxyman: stale system proxy restored")
 	}
+	// 启用时按设置把 MCP 服务挂到回环地址（失败不阻断应用启动）。
+	if a.settings.MCPEnabled {
+		if err := a.startMCPServer(); err != nil {
+			println("WProxyman: failed to start MCP server:", err.Error())
+		}
+	}
 	// Refresh the cached certificate-trust state.
 	a.refreshCertInstalled()
 	// Windows：证书写入用户根存储无弹框，可静默自动安装。
@@ -257,6 +270,7 @@ func (a *App) shutdown(ctx context.Context) {
 		if a.proxySrv != nil {
 			a.proxySrv.Stop()
 		}
+		a.stopMCPServer()
 	})
 }
 

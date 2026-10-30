@@ -12,6 +12,9 @@ import (
 	"wproxyman/internal/tools"
 )
 
+// DefaultMCPPort 是 MCP HTTP 端点的默认端口（与代理端口错开，便于记忆与排查）。
+const DefaultMCPPort = 10087
+
 // DefaultProxyPort 是代理的默认监听端口。
 //
 // 端口是"用户偏好"而不是"运行时随机值"：只有固定端口，手机/模拟器上填写的
@@ -60,6 +63,17 @@ type Settings struct {
 	// 不能依赖 Manager.Current()，因为部分平台读不到当前值（见 systemproxy 包说明）。
 	SystemProxyTarget string `json:"systemProxyTarget"`
 
+	// ---- MCP（让 AI 客户端控制本应用）----
+	// 默认关闭：开启等于对外（本机回环）暴露"控制整个应用"的能力，必须由用户主动打开。
+	MCPEnabled bool `json:"mcpEnabled"`
+	// MCPPort 是 MCP HTTP 端点端口（默认 10087，与代理端口错开）。
+	MCPPort int `json:"mcpPort"`
+	// MCPToken 是访问令牌；为空时会在启用时自动生成。
+	MCPToken string `json:"mcpToken"`
+	// 权限档开关：默认都关，只放行 read。
+	MCPAllowWrite     bool `json:"mcpAllowWrite"`
+	MCPAllowDangerous bool `json:"mcpAllowDangerous"`
+
 	// StreamRules 是用户为**非标**流式协议自定义的解析规则（SSE/NDJSON）。
 	// OpenAI / Anthropic 由前端内置预设处理，这里只放私有协议的补充规则。
 	StreamRules []models.StreamRule `json:"streamRules,omitempty"`
@@ -79,6 +93,7 @@ func defaultSettings() Settings {
 		SSLHosts:          make(map[string]bool),
 		Theme:             "dark",
 		MaxBodyBytes:      64 << 20,
+		MCPPort:           DefaultMCPPort,
 	}
 }
 
@@ -145,6 +160,12 @@ func (a *App) SetSettings(s Settings) error {
 	a.settings.AllowLAN = s.AllowLAN
 	a.settings.ProxyPort = s.ProxyPort
 	a.settings.StreamRules = s.StreamRules
+	a.settings.MCPEnabled = s.MCPEnabled
+	if validProxyPort(s.MCPPort) {
+		a.settings.MCPPort = s.MCPPort
+	}
+	a.settings.MCPAllowWrite = s.MCPAllowWrite
+	a.settings.MCPAllowDangerous = s.MCPAllowDangerous
 	if s.MaxBodyBytes > 0 {
 		a.settings.MaxBodyBytes = s.MaxBodyBytes
 	}

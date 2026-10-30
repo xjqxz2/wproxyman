@@ -20,7 +20,11 @@ import (
 
 // HTTPConfig 配置 HTTP 传输层。
 type HTTPConfig struct {
-	Token string // 访问令牌；空串表示拒绝所有请求（不提供"无鉴权"模式）
+	// Token 每次请求都会调用一次，返回当前有效令牌。
+	// 用函数而不是字符串：轮换令牌时无需重建 handler / 重启服务，
+	// 也就不会出现"重启时端口还没释放"的竞态。
+	// 返回空串表示拒绝所有请求（不提供"无鉴权"模式）。
+	Token func() string
 	// MaxBytes 限制请求体大小，默认 1 MiB（工具参数不该有这么大）。
 	MaxBytes int64
 }
@@ -81,7 +85,11 @@ func NewHTTPHandler(svc *Service, cfg HTTPConfig) http.Handler {
 
 // tokenOK 用常数时间比较令牌，避免时序侧信道。
 // 令牌为空时一律拒绝：绝不提供"无鉴权"后门。
-func tokenOK(r *http.Request, want string) bool {
+func tokenOK(r *http.Request, tokenFunc func() string) bool {
+	if tokenFunc == nil {
+		return false
+	}
+	want := tokenFunc()
 	if want == "" {
 		return false
 	}

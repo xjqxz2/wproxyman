@@ -13,7 +13,7 @@ const testToken = "tok-abcdefghijklmnop"
 
 func newHTTPTest(t *testing.T, perms Permissions) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(NewHTTPHandler(newTestService(perms), HTTPConfig{Token: testToken}))
+	srv := httptest.NewServer(NewHTTPHandler(newTestService(perms), HTTPConfig{Token: func() string { return testToken }}))
 	t.Cleanup(srv.Close)
 	return srv
 }

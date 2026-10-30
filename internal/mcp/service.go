@@ -97,6 +97,9 @@ func NewService(reg *Registry, perms func() Permissions, info Implementation) *S
 // Audit 暴露审计日志（UI 要展示）。
 func (s *Service) Audit() *AuditLog { return s.audit }
 
+// Registry 暴露工具表（UI 需要展示工具数量）。
+func (s *Service) Registry() *Registry { return s.registry }
+
 // ServerInfo 返回服务自述。
 func (s *Service) ServerInfo() Implementation { return s.info }
 
