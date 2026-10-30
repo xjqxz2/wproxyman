@@ -49,7 +49,8 @@ type FlowCallback func(f *models.Flow, phase string)
 
 // Config 配置代理服务器。
 type Config struct {
-	// Port 监听端口；0 表示自动选择空闲端口。
+	// Port 监听端口。调用方（App.startProxy）总会解析成具体端口后再传入；
+	// 传 0 等价于让系统随机分配一个空闲端口，仅在测试等特殊场景使用。
 	Port int
 	// CA 用于签发按域名的 MITM 证书（由 internal/cert 实现）。
 	CA interface {

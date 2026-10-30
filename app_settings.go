@@ -4,11 +4,40 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
 	"wproxyman/internal/tools"
 )
+
+// DefaultProxyPort 是代理的默认监听端口。
+//
+// 端口是"用户偏好"而不是"运行时随机值"：只有固定端口，手机/模拟器上填写的
+// 代理地址（电脑IP:端口）才会长期有效。若该端口被其他程序占用，代理启动会
+// 直接失败并提示用户，由用户在设置里改填其他端口——不做自动顺延，
+// 避免端口在用户不知情的情况下漂移。
+const DefaultProxyPort = 10086
+
+// 端口合法区间。
+const (
+	MinProxyPort = 1
+	MaxProxyPort = 65535
+)
+
+// validProxyPort 判断端口是否可以用于监听。
+func validProxyPort(port int) bool {
+	return port >= MinProxyPort && port <= MaxProxyPort
+}
+
+// normalizeProxyPort 把历史（<=0，早期版本用 0 表示"自动分配端口"）或非法
+// 的端口值归一化为默认端口。
+func normalizeProxyPort(port int) int {
+	if !validProxyPort(port) {
+		return DefaultProxyPort
+	}
+	return port
+}
 
 // Settings holds persisted application preferences.
 type Settings struct {
@@ -26,23 +55,31 @@ func settingsPath() string {
 	return filepath.Join(configDir(), "settings.json")
 }
 
-func loadSettings() Settings {
-	s := Settings{
-		ProxyPort:         0,
-		AutoStartProxy:    true, // start capturing immediately, like Proxyman
+// defaultSettings 返回内置默认设置（无配置文件时使用）。
+func defaultSettings() Settings {
+	return Settings{
+		ProxyPort:         DefaultProxyPort, // 固定端口，不再是 0（自动分配）
+		AutoStartProxy:    true,             // start capturing immediately, like Proxyman
 		AllowLAN:          false,
 		SSLEnabledDefault: true,
 		SSLHosts:          make(map[string]bool),
 		Theme:             "dark",
 		MaxBodyBytes:      64 << 20,
 	}
+}
+
+func loadSettings() Settings {
+	s := defaultSettings()
 	data, err := os.ReadFile(settingsPath())
 	if err != nil {
 		return s
 	}
 	if err := json.Unmarshal(data, &s); err != nil {
-		return s
+		return defaultSettings()
 	}
+	// 迁移历史配置：早期版本用 0 表示"自动选择空闲端口"，导致每次启动端口
+	// 都会变化；现在统一固定为偏好端口。
+	s.ProxyPort = normalizeProxyPort(s.ProxyPort)
 	if s.SSLHosts == nil {
 		s.SSLHosts = make(map[string]bool)
 	}
@@ -66,13 +103,24 @@ func (a *App) GetSettings() Settings {
 	return s
 }
 
-// SetSettings persists updated settings.
-// 注意：当 AllowLAN 变化且代理正在运行时，必须重启代理以应用新的监听地址
-// （127.0.0.1 ↔ 0.0.0.0）——否则局域网设备会因代理仍只监听回环而连不上
-// （"找不到服务器"）。重启在解锁后进行，保持端口不变。
-func (a *App) SetSettings(s Settings) {
+// SetSettings persists updated settings and applies the parts that require a
+// running-proxy restart. 返回错误以便前端把具体原因（如端口被占用）提示给用户。
+//
+// 两种改动需要重启代理：
+//   - AllowLAN 变化：监听地址需在 127.0.0.1 ↔ 0.0.0.0 之间切换，否则局域网
+//     设备会因代理仍只监听回环而连不上（"找不到服务器"）；
+//   - 端口变化：切换到用户填写的端口。
+//
+// 重启失败（新端口被占用）时回滚到原端口并返回错误——绝不把用户留在
+// "代理已停止"或"端口指向一个绑不上的值"的状态。
+func (a *App) SetSettings(s Settings) error {
+	if !validProxyPort(s.ProxyPort) {
+		return fmt.Errorf("端口 %d 非法：请填写 %d-%d 之间的整数", s.ProxyPort, MinProxyPort, MaxProxyPort)
+	}
+
 	a.mu.Lock()
 	lanChanged := a.settings.AllowLAN != s.AllowLAN
+	portChanged := a.settings.ProxyPort != s.ProxyPort
 	var runningPort int
 	var running bool
 	if a.proxySrv != nil && a.proxySrv.IsRunning() {
@@ -81,18 +129,42 @@ func (a *App) SetSettings(s Settings) {
 	}
 	a.settings.Theme = s.Theme
 	a.settings.AllowLAN = s.AllowLAN
+	a.settings.ProxyPort = s.ProxyPort
 	if s.MaxBodyBytes > 0 {
 		a.settings.MaxBodyBytes = s.MaxBodyBytes
 	}
 	a.mu.Unlock()
 	_ = a.saveSettings()
 
-	if lanChanged && running {
-		a.StopProxy()
-		if _, err := a.startProxy(runningPort); err != nil {
-			println("WProxyman: failed to restart proxy after AllowLAN change:", err.Error())
-		}
+	if !running || (!lanChanged && !portChanged) {
+		// 代理未运行，或无需重启：仅同步一次状态（端口显示随之更新）。
+		a.emitProxyStatus()
+		return nil
 	}
+
+	// 目标端口：改端口时用新端口；仅 AllowLAN 变化时沿用当前实际端口，
+	// 保持端口不变。
+	target := runningPort
+	if portChanged {
+		target = s.ProxyPort
+	}
+
+	a.StopProxy()
+	if _, err := a.startProxy(target); err != nil {
+		if portChanged {
+			// 回滚：恢复原端口并重新运行，同时把配置改回原端口，
+			// 否则下次启动仍会用一个绑不上的端口。
+			a.mu.Lock()
+			a.settings.ProxyPort = runningPort
+			a.mu.Unlock()
+			_ = a.saveSettings()
+			if _, rerr := a.startProxy(runningPort); rerr == nil {
+				return fmt.Errorf("%v（已恢复原端口 %d）", err, runningPort)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 // ApplyToolConfig updates the tools engine configuration.

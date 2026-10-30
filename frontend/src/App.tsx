@@ -31,10 +31,10 @@ export default function App() {
 
   // 仅挂载时执行一次：初始化数据 + 订阅后端事件。
   useEffect(() => {
-    // 并发拉取初始数据（流量列表、代理状态、端口、系统代理、SSL、工具配置、设置、证书状态）。
+    // 并发拉取初始数据（流量列表、代理状态、端口、系统代理、SSL、工具配置、设置、证书状态、启动错误）。
     const init = async () => {
       try {
-        const [flows, proxyRunning, port, sysProxy, sslState, toolCfg, settings, certInstalled] = await Promise.all([
+        const [flows, proxyRunning, port, sysProxy, sslState, toolCfg, settings, certInstalled, proxyError] = await Promise.all([
           api.getFlows(),
           api.isProxyRunning(),
           api.getProxyPort(),
@@ -43,9 +43,11 @@ export default function App() {
           api.getToolConfig(),
           api.getSettings(),
           api.isCertificateInstalled(),
+          // 启动阶段若端口被占用，代理会启动失败；取回原因以便界面提示用户改端口。
+          api.getProxyError(),
         ]);
         setFlows(flows);
-        setProxy({ running: proxyRunning, port, systemProxy: sysProxy } as ProxyStatus);
+        setProxy({ running: proxyRunning, port, systemProxy: sysProxy, error: proxyError } as ProxyStatus);
         setSSL(sslState.default as boolean, (sslState.hosts as Record<string, boolean>) ?? {});
         if (toolCfg) setToolConfig(toolCfg);
         setSettings(settings);

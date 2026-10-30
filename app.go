@@ -56,6 +56,10 @@ type App struct {
 	// 证书信任状态缓存（每次 CONNECT 都查系统存储太慢）。
 	certInstalled bool
 
+	// lastProxyErr 记录最近一次启动代理失败的原因（典型场景：偏好端口被
+	// 其他程序占用）。前端据此在设置面板给出"请改端口"的可操作提示。
+	lastProxyErr string
+
 	// 事件泵：Windows 上 EventsEmit 是同步 ExecJS，直接调用会阻塞代理
 	// handler goroutine。所有事件都先入这个有界队列，由单个泵 goroutine
 	// 异步投递到前端。
@@ -141,17 +145,14 @@ func (a *App) startup(ctx context.Context) {
 	a.sslHosts = a.settings.SSLHosts
 
 	// Auto-start the proxy if it was running when the app closed, then make
-	// sure the OS system proxy points at the current port (the port may have
-	// changed between runs, leaving a stale system proxy behind).
+	// sure the OS system proxy points at the current port.
+	// 端口是固定的（默认 10086），因此启动失败的常见原因只有"端口被占用"：
+	// 此时保留配置不动，前端会拿到 lastProxyErr 提示用户改端口。
 	if a.settings.AutoStartProxy {
-		port, err := a.startProxy(a.settings.ProxyPort)
-		if err == nil {
-			a.settings.ProxyPort = port
-			a.settings.AutoStartProxy = true
-			_ = a.saveSettings()
-			if err := a.SetSystemProxyEnabled(true); err != nil {
-				println("WProxyman: failed to set system proxy:", err.Error())
-			}
+		if _, err := a.startProxy(0); err != nil {
+			println("WProxyman: failed to start proxy:", err.Error())
+		} else if err := a.SetSystemProxyEnabled(true); err != nil {
+			println("WProxyman: failed to set system proxy:", err.Error())
 		}
 	}
 	// Refresh the cached certificate-trust state.
@@ -246,20 +247,78 @@ func (a *App) shutdown(ctx context.Context) {
 
 // --- Proxy control ---
 
-// startProxy boots the interception proxy on the given port (0 = auto).
+// bindHost 返回当前应监听的地址（调用方需持有 a.mu）。
+// AllowLAN 开启时监听 0.0.0.0，允许局域网设备（手机/模拟器）接入抓包；
+// 否则保持 127.0.0.1 回环（不对局域网暴露）。
+func (a *App) bindHost() string {
+	if a.settings.AllowLAN {
+		return "0.0.0.0"
+	}
+	return "127.0.0.1"
+}
+
+// proxyListenError 把监听失败包装成用户可操作的提示（重点：告诉用户去改端口）。
+func proxyListenError(port int, err error) error {
+	return fmt.Errorf("端口 %d 无法使用，可能已被其他程序占用（%v）。请改填其他端口后重试", port, err)
+}
+
+// canBind 探测端口当前能否绑定（只探测，随即释放，不长期占用）。
+func canBind(host string, port int) error {
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		return err
+	}
+	return ln.Close()
+}
+
+// startProxy boots the interception proxy on the given port.
+//
+// 端口语义（固定端口，避免手机/模拟器上填写的代理地址失效）：
+//
+//	port < 0  → 非法，返回错误；
+//	port == 0 → 使用设置中的端口（未设置或历史值 0 时回落 DefaultProxyPort）；
+//	port > 0  → 绑定该端口。
+//
+// 端口被占用时直接返回错误——不自动顺延、不随机分配，由用户在设置里改端口。
 func (a *App) startProxy(port int) (int, error) {
 	a.mu.Lock()
-	if a.proxySrv != nil && a.proxySrv.IsRunning() {
-		p := a.proxySrv.Port()
+	// 解析目标端口（settings.ProxyPort 需在锁内读取）。
+	want := port
+	if want == 0 {
+		want = normalizeProxyPort(a.settings.ProxyPort)
+	}
+	if !validProxyPort(want) {
 		a.mu.Unlock()
-		return p, nil
+		return 0, fmt.Errorf("端口 %d 非法：请填写 %d-%d 之间的整数", port, MinProxyPort, MaxProxyPort)
 	}
-	// AllowLAN 开启时监听 0.0.0.0，允许局域网设备（手机/模拟器）接入抓包；
-	// 否则保持 127.0.0.1 回环（不对局域网暴露）。
-	bindHost := "127.0.0.1"
-	if a.settings.AllowLAN {
-		bindHost = "0.0.0.0"
+
+	// 已在运行：端口相同则复用；端口不同则迁移到新端口。
+	if a.proxySrv != nil && a.proxySrv.IsRunning() {
+		cur := a.proxySrv.Port()
+		if cur == want {
+			a.mu.Unlock()
+			return cur, nil
+		}
+		// 先探测新端口能否绑定：不能则报错并保持原代理继续运行（不打断抓包）。
+		if err := canBind(a.bindHost(), want); err != nil {
+			a.mu.Unlock()
+			return 0, proxyListenError(want, err)
+		}
+		srv := a.proxySrv
+		a.proxySrv = nil
+		a.mu.Unlock()
+		srv.Stop()
+		if _, err := a.startProxy(want); err != nil {
+			// 迁移失败：尽力恢复到原端口，避免代理停摆。
+			if _, rerr := a.startProxy(cur); rerr == nil {
+				return 0, fmt.Errorf("%v（已恢复原端口 %d）", err, cur)
+			}
+			return 0, err
+		}
+		return want, nil
 	}
+
+	bindHost := a.bindHost()
 	// 启用内置证书下载端点：手机可访问 http://<电脑IP>:<port>/wpx-cert.pem
 	// 下载并安装 CA（等价于 Proxyman 的证书安装页）。CA 缺失时置空禁用。
 	var certPEM []byte
@@ -267,7 +326,7 @@ func (a *App) startProxy(port int) (int, error) {
 		certPEM = a.ca.CertPEM()
 	}
 	srv := proxy.NewServer(proxy.Config{
-		Port:        port,
+		Port:        want,
 		BindHost:    bindHost,
 		CA:          a.ca,
 		CACertPEM:   certPEM,
@@ -290,13 +349,19 @@ func (a *App) startProxy(port int) (int, error) {
 		},
 	})
 	if err := srv.Start(); err != nil {
+		err = proxyListenError(want, err)
+		a.lastProxyErr = err.Error()
 		a.mu.Unlock()
+		// 失败也要同步一次状态，前端才能拿到 lastProxyErr 做提示。
+		a.emitProxyStatus()
 		return 0, err
 	}
 	a.proxySrv = srv
-	a.settings.ProxyPort = srv.Port()
+	// 只在绑定成功后记录端口；端口不会再漂移，这里存的就是用户选择的端口。
+	a.settings.ProxyPort = want
 	a.settings.AutoStartProxy = true
-	actual := srv.Port()
+	a.lastProxyErr = ""
+	actual := want
 	a.mu.Unlock()
 
 	_ = a.saveSettings()
@@ -335,14 +400,22 @@ func (a *App) IsProxyRunning() bool {
 	return a.proxySrv != nil && a.proxySrv.IsRunning()
 }
 
-// GetProxyPort returns the current proxy port.
+// GetProxyPort returns the current proxy port. 代理未运行时返回配置端口
+// （固定为偏好端口，默认 10086），便于界面展示"将使用哪个端口"。
 func (a *App) GetProxyPort() int {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	if a.proxySrv == nil {
-		return a.settings.ProxyPort
+	if a.proxySrv != nil && a.proxySrv.IsRunning() {
+		return a.proxySrv.Port()
 	}
-	return a.proxySrv.Port()
+	return normalizeProxyPort(a.settings.ProxyPort)
+}
+
+// GetProxyError 返回最近一次启动代理失败的原因（空串表示无错误）。
+func (a *App) GetProxyError() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.lastProxyErr
 }
 
 // normalizeFlow guarantees slice fields are never nil: Go marshals nil
@@ -394,6 +467,7 @@ func (a *App) emitProxyStatus() {
 		"running":     a.IsProxyRunning(),
 		"port":        a.GetProxyPort(),
 		"systemProxy": a.sysProxy.Status(),
+		"error":       a.GetProxyError(),
 	})
 }
 
@@ -403,6 +477,10 @@ func (a *App) emitProxyStatus() {
 func (a *App) SetSystemProxyEnabled(enabled bool) error {
 	if !enabled {
 		return a.sysProxy.Clear()
+	}
+	// 代理没在运行时把系统代理指向它，会让整机流量打到无人监听的端口上。
+	if !a.IsProxyRunning() {
+		return fmt.Errorf("代理未运行：请先启动代理（端口 %d），再开启系统代理", a.GetProxyPort())
 	}
 	port := a.GetProxyPort()
 	if port == 0 {

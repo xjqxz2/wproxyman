@@ -198,11 +198,13 @@ export interface Settings {
   toolConfig?: EngineConfig; // 工具引擎配置
 }
 
-// ProxyStatus — 代理运行状态（是否运行、监听端口、系统代理开关）。
+// ProxyStatus — 代理运行状态（是否运行、监听端口、系统代理开关、最近一次启动失败原因）。
 export interface ProxyStatus {
   running: boolean;
   port: number;
   systemProxy: boolean;
+  // error — 最近一次启动代理失败的原因（如端口被其他程序占用）；空串/undefined 表示无错误。
+  error?: string;
 }
 
 // ============ UI 辅助函数 ============

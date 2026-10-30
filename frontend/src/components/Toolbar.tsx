@@ -26,8 +26,10 @@ const setSettingsOpen = useApp((s) => s.setSettingsOpen);
   const setSearch = useFlows((s) => s.setSearch);
 
   // toggleProxy — 切换抓包（代理）运行状态。
-  // 运行中 → 先关闭系统代理再停止代理；未运行 → 启动代理（端口 0 表示默认）
+  // 运行中 → 先关闭系统代理再停止代理；未运行 → 用设置里的固定端口启动代理
+  // （端口参数 0 表示"使用设置中的端口"，不再是"随机分配空闲端口"），
   // 并尝试开启系统代理，若系统代理失败则提示但仍保持代理运行。
+  // 启动失败（典型：端口被其他程序占用）时提示用户去设置里改端口。
   const toggleProxy = async () => {
     try {
       if (proxy.running) {
@@ -46,9 +48,9 @@ const setSettingsOpen = useApp((s) => s.setSettingsOpen);
         }
       }
     } catch (err) {
-      // 代理启停本身失败：记录日志并弹窗展示错误。
+      // 代理启停本身失败：记录日志并弹窗展示错误（并指引用户改端口）。
       console.error('Failed to toggle proxy', err);
-      window.alert(`${t('toolbar.proxyStartFailed')}\n${String(err)}`);
+      window.alert(`${t('toolbar.proxyStartFailed')}\n${String(err)}\n\n${t('toolbar.changePortHint')}`);
     }
   };
 

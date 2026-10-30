@@ -17,6 +17,7 @@ export const en = {
     openSettings: 'Open settings',
     proxyRunningSysProxyFailed: 'Proxy is running on port {port}, but enabling the system proxy failed:',
     proxyStartFailed: 'Failed to start the proxy:',
+    changePortHint: 'Open Settings → Proxy, enter a different port, then retry.',
   },
 
   // ---- 状态栏 ----
@@ -133,7 +134,11 @@ export const en = {
     runningOn: 'Running on port {port}',
     notRunning: 'Not running',
     port: 'Port',
-    portHint: '0 = auto',
+    portHint: 'Fixed at 10086 by default. If another app occupies it, enter a different port here.',
+    portInvalid: 'Port must be an integer between 1 and 65535',
+    portSaved: 'Port saved as {port}; it takes effect when you start the proxy.',
+    portRestarted: 'Port changed to {port}; the proxy has been restarted.',
+    startedOn: 'Proxy started on port {port}',
     start: 'Start',
     stop: 'Stop',
     systemProxy: 'System Proxy',
@@ -152,6 +157,7 @@ export const en = {
     mb: 'MB',
     devices: 'Devices',
     devicesHint: 'Configure your phone/emulator to use this address as an HTTP proxy.',
+    devicesProxyHint: 'Set the phone HTTP proxy to "<any IP above>:{port}". The port is fixed — keep the phone in sync.',
     allowLAN: 'Allow LAN connections',
     allowLANHint: 'Expose the proxy to your LAN so phones/emulators can connect. First connection may prompt a firewall grant.',
     allowLANSaved: 'Saved',

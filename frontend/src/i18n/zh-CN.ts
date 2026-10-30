@@ -19,6 +19,7 @@ export const zhCN: Dict = {
     openSettings: '打开设置',
     proxyRunningSysProxyFailed: '代理已在端口 {port} 运行，但开启系统代理失败：',
     proxyStartFailed: '启动代理失败：',
+    changePortHint: '请在 设置 → 代理 中改填其他端口后重试。',
   },
 
   // ---- 状态栏 ----
@@ -135,7 +136,11 @@ export const zhCN: Dict = {
     runningOn: '运行于端口 {port}',
     notRunning: '未运行',
     port: '端口',
-    portHint: '0 = 自动',
+    portHint: '默认固定 10086；若该端口已被其他程序占用，请在此改填其他端口。',
+    portInvalid: '端口需为 1–65535 之间的整数',
+    portSaved: '端口已保存为 {port}，启动代理后生效',
+    portRestarted: '端口已改为 {port}，代理已重启',
+    startedOn: '代理已启动，端口 {port}',
     start: '启动',
     stop: '停止',
     systemProxy: '系统代理',
@@ -154,6 +159,7 @@ export const zhCN: Dict = {
     mb: 'MB',
     devices: '设备',
     devicesHint: '在手机/模拟器中配置此地址作为 HTTP 代理。',
+    devicesProxyHint: '手机 HTTP 代理填「上方任一 IP:{port}」。端口固定，手机端配置需与此保持一致。',
     allowLAN: '允许局域网连接',
     allowLANHint: '将代理暴露到局域网，供手机/模拟器连接抓包。首次连接可能弹出系统防火墙授权。',
     allowLANSaved: '已保存',

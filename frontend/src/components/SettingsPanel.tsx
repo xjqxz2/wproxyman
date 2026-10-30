@@ -1,8 +1,8 @@
-﻿// SettingsPanel.tsx —璁剧疆寮圭獥缁勪欢
+// SettingsPanel.tsx —璁剧疆寮圭獥缁勪欢
 // 鑱岃矗锛氫互妯℃€佹褰㈠紡闆嗕腑绠＄悊搴旂敤璁剧疆锛屽垎涓哄嚑涓尯鍧楋細
 //   Proxy锛堜唬鐞嗭細绔彛/鍚仠/绯荤粺浠ｇ悊）€丼SL Proxying锛圫SL 鎷︽埅寮€鍏炽€丆A 璇佷功瀹夎/绉婚櫎/鏌ョ湅）€?//   Capture锛堟崟鑾凤細姝ｆ枃澶у皬涓婇檺）€丏evices（眬鍩熺綉 IP 鍒楄〃锛屼緵鎵嬫満/妯℃嫙鍣ㄩ厤缃唬鐞嗭級。//   Sessions锛堜細璇濓細淇濆瓨/鎵撳紑/瀵煎嚭/瀵煎叆）€乀heme锛堜富棰樺垏鎹級。// 浜や簰妯″潡：//   - store锛歶seApp锛堜唬鐞嗙姸鎬併€丼SL銆佽瘉涔︺€佽缃瓑锛屽惈瀵瑰簲 setter锛夛紱
 //   - services/api锛氫唬鐞?璇佷功/璁剧疆/浼氳瘽鐩稿叧鍏ㄩ儴鍚庣鏂规硶。//   - 璇存槑：竷灞€鏍峰紡鍏ㄩ儴澶嶇敤 theme.css 鐨?CSS 鍙橀噺锛堟棤纭紪鐮侀鑹诧級銆
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { X, ShieldCheck, ShieldAlert, Download, Upload, Save, FolderOpen, MonitorSmartphone, Globe } from 'lucide-react';
 import { useApp } from '../store';
@@ -74,6 +74,10 @@ const proxy = useApp((s) => s.proxy);
   // 绔彛杈撳叆妗嗭紙鍒濆鍊煎彇鑷?store 璁剧疆）€佹槸鍚﹁鐢ㄦ埛鎵嬪姩鏀硅繃锛坉irty）€佸繖纰屼笌缁撴灉娑堟伅銆
 const [portInput, setPortInput] = useState(() => String(useApp.getState().settings?.proxyPort ?? 0));
   const [portDirty, setPortDirty] = useState(false);
+  // portError — 端口相关的内联错误（非法值、被占用等），null 表示无错误。
+  const [portError, setPortError] = useState<string | null>(null);
+  // portInputRef — 端口输入框引用：启动/保存失败时自动聚焦，方便用户直接改端口。
+  const portInputRef = useRef<HTMLInputElement | null>(null);
   const [proxyBusy, setProxyBusy] = useState(false);
   const [proxyMsg, setProxyMsg] = useState<OpMessage>(null);
 
@@ -161,12 +165,14 @@ useEffect(() => {
   // 姹囨€讳负 ProxyStatus 骞跺啓鍥?store锛涘け璐ヨ繑鍥?null 骞惰褰曟棩蹇椼€
 const refreshProxy = useCallback(async (): Promise<ProxyStatus | null> => {
     try {
-      const [running, port, sysProxy] = await Promise.all([
+      const [running, port, sysProxy, error] = await Promise.all([
         api.isProxyRunning(),
         api.getProxyPort(),
         api.getSystemProxyEnabled(),
+        // 一并取回最近一次启动失败原因，避免刷新状态时把错误提示覆盖掉。
+        api.getProxyError(),
       ]);
-      const status: ProxyStatus = { running, port, systemProxy: sysProxy };
+      const status: ProxyStatus = { running, port, systemProxy: sysProxy, error };
       setProxy(status);
       return status;
     } catch (err) {
@@ -175,20 +181,82 @@ const refreshProxy = useCallback(async (): Promise<ProxyStatus | null> => {
     }
   }, [setProxy]);
 
-  // handleStart —鍚姩浠ｇ悊锛氳В鏋愮鍙ｈ緭鍏ワ紙闈炴硶/璐熷€煎洖閫€涓?0 鍗宠嚜鍔ㄥ垎閰嶏級：  // 鍚姩鍚庡埛鏂扮姸鎬佸苟鎻愮ず瀹為檯绔彛銆
+  // parsePortInput — 解析并校验端口输入框：只接受 1–65535 的整数。
+  // 非法时写入内联错误并返回 null。
+const parsePortInput = (): number | null => {
+    const requested = Number(portInput.trim());
+    if (!Number.isInteger(requested) || requested < 1 || requested > 65535) {
+      setPortError(t('settings.portInvalid'));
+      return null;
+    }
+    setPortError(null);
+    return requested;
+  };
+
+  // handlePortBlur — 端口输入框失焦时保存。
+  // 代理运行中保存会由后端重启到新端口；失败（如端口被占用）则回读后端真实值，
+  // 避免界面显示一个并未生效的端口。端口固定不变，这就是"想固定也固定不了"的修复点。
+const handlePortBlur = async () => {
+    const requested = parsePortInput();
+    if (requested === null) return;
+    if (!settings || requested === settings.proxyPort) {
+      setPortDirty(false);
+      return;
+    }
+    try {
+      const next: Settings = { ...settings, proxyPort: requested };
+      await api.setSettings(next);
+      setSettings(next);
+      setPortDirty(false);
+      const status = await refreshProxy();
+      setProxyMsg({
+        text: status?.running
+          ? t('settings.portRestarted', { port: requested })
+          : t('settings.portSaved', { port: requested }),
+        ok: true,
+      });
+    } catch (err) {
+      console.error('Failed to save proxy port', err);
+      setPortError(String(err));
+      try {
+        const latest = await api.getSettings();
+        setSettings(latest);
+        setPortInput(String(latest.proxyPort));
+        setPortDirty(false);
+      } catch (reloadErr) {
+        console.error('Failed to reload settings after port error', reloadErr);
+      }
+      await refreshProxy();
+    }
+  };
+
+  // handleStart — 启动代理：先校验端口，再用该端口启动（端口被占用会直接报错，
+  // 不再自动换端口），最后刷新状态并提示实际端口。
 const handleStart = async () => {
+    const requested = parsePortInput();
+    if (requested === null) {
+      portInputRef.current?.focus();
+      return;
+    }
     setProxyBusy(true);
     setProxyMsg(null);
     try {
-      const requested = Number(portInput);
-      const port = Number.isFinite(requested) && requested >= 0 ? requested : 0;
-      await api.startProxy(port);
-      const status = await refreshProxy();
-      const actual = status?.port && status.port > 0 ? status.port : port || 0;
-      setProxyMsg({ text: actual ? `Proxy started on port ${actual}.` : 'Proxy started (auto-assigned port).', ok: true });
+      await api.startProxy(requested);
+      const [status, latest] = await Promise.all([refreshProxy(), api.getSettings()]);
+      if (latest) setSettings(latest);
+      setPortDirty(false);
+      if (status?.error) {
+        // 端口被占用等启动失败：展示后端原始原因并聚焦端口输入框。
+        setProxyMsg({ text: `${t('settings.startFailed')} ${status.error}`, ok: false });
+        portInputRef.current?.focus();
+      } else {
+        const actual = status?.port && status.port > 0 ? status.port : requested;
+        setProxyMsg({ text: t('settings.startedOn', { port: actual }), ok: true });
+      }
     } catch (err) {
       console.error('Failed to start proxy', err);
-      setProxyMsg({ text: t('settings.startFailed'), ok: false });
+      setProxyMsg({ text: `${t('settings.startFailed')} ${String(err)}`, ok: false });
+      portInputRef.current?.focus();
     } finally {
       setProxyBusy(false);
     }
@@ -415,16 +483,24 @@ if (e.target === e.currentTarget) onClose();
                 <span style={{ color: 'var(--text-secondary)' }}>{t('settings.port')}</span>
                 {/* 绔彛杈撳叆锛氫慨鏀瑰嵆鏍囪 dirty锛岄伩鍏嶈璁剧疆鍚屾瑕嗙洊。*/}
                 <input
+                  ref={portInputRef}
                   type="number"
                   className="input"
                   style={{ width: 90 }}
-                  min={0}
+                  min={1}
                   max={65535}
                   value={portInput}
                   onChange={(e) => {
                     setPortDirty(true);
+                    setPortError(null);
                     setPortInput(e.target.value);
                   }}
+                  onBlur={handlePortBlur}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                  }}
+                  disabled={proxyBusy}
+                  aria-invalid={portError ? true : undefined}
                   aria-label="Proxy port"
                 />
               </label>
@@ -449,7 +525,11 @@ if (e.target === e.currentTarget) onClose();
                 />
               </span>
             </div>
-            <div style={hintStyle}>Port 0 picks an available port automatically.</div>
+            <div style={hintStyle}>{t('settings.portHint')}</div>
+            {/* 端口内联错误（非法值 / 被占用）优先展示红色提示。 */}
+            {portError && <div style={statusStyle(false)}>{portError}</div>}
+            {/* 后端记录的启动失败原因（如启动时端口已被占用）：有操作消息时由其展示，避免重复。 */}
+            {!proxyMsg && proxy.error && <div style={statusStyle(false)}>{`${t('settings.startFailed')} ${proxy.error}`}</div>}
             {proxyMsg && <div style={statusStyle(proxyMsg.ok)}>{proxyMsg.text}</div>}
           </div>
 
@@ -567,6 +647,10 @@ if (e.target === e.currentTarget) onClose();
               </ul>
             ) : (
               <div style={hintStyle}>{devicesError || t('settings.noLanAddresses')}</div>
+            )}
+            {/* 手机要填的完整代理地址：端口固定（默认 10086），手机端配置需保持一致。 */}
+            {devices.length > 0 && (
+              <div style={hintStyle}>{t('settings.devicesProxyHint', { port: proxy.port })}</div>
             )}
             {/* 局域网连接开关：将代理绑定到 0.0.0.0 供其他设备接入。 */}
             <div style={rowStyle}>

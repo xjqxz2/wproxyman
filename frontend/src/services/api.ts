@@ -38,11 +38,15 @@ export const Events = {
 // 需要返回 Flow/EngineConfig/Settings 的调用处使用类型断言转换到 types.ts 规范类型。
 export const api = {
   // ---- 代理控制 ----
-  // startProxy：启动代理，port 缺省为 0（使用设置中的端口）。
+  // startProxy：启动代理。port 缺省为 0，表示"使用设置中的端口"（默认 10086）。
+  // 端口是固定的：被其他程序占用时后端直接返回错误，不会自动换端口，
+  // 需要用户在设置里改填其他端口。
   startProxy: (port = 0) => App.StartProxy(port),
   stopProxy: () => App.StopProxy(),
   isProxyRunning: () => App.IsProxyRunning(),
   getProxyPort: () => App.GetProxyPort(),
+  // getProxyError：最近一次启动代理失败的原因（空串表示无错误）。
+  getProxyError: () => App.GetProxyError(),
   // setSystemProxyEnabled：开启/关闭系统级代理（把流量导向本代理）。
   setSystemProxyEnabled: (on: boolean) => App.SetSystemProxyEnabled(on),
   getSystemProxyEnabled: () => App.GetSystemProxyEnabled(),
@@ -95,6 +99,7 @@ export const api = {
 
   // ---- 设置 / 其他 ----
   getSettings: () => App.GetSettings() as unknown as Promise<Settings>,
+  // setSettings：保存设置。端口非法或新端口被占用时后端会 reject（错误信息可直接展示）。
   setSettings: (s: Settings) => App.SetSettings(s as never),
   getLANIPs: () => App.GetLANIPs(),
 
