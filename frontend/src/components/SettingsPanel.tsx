@@ -267,12 +267,34 @@ const handleStop = async () => {
     setProxyBusy(true);
     setProxyMsg(null);
     try {
+      // 停止抓包时后端会一并还原系统代理（否则整机流量会打到一个已无人监听的端口上）。
+      const hadSystemProxy = useApp.getState().proxy.systemProxy;
       await api.stopProxy();
       await refreshProxy();
-      setProxyMsg({ text: t('settings.proxyStopped'), ok: true });
+      setProxyMsg({
+        text: hadSystemProxy ? t('settings.proxyStoppedSysProxyRestored') : t('settings.proxyStopped'),
+        ok: true,
+      });
     } catch (err) {
       console.error('Failed to stop proxy', err);
       setProxyMsg({ text: t('settings.stopFailed'), ok: false });
+    } finally {
+      setProxyBusy(false);
+    }
+  };
+
+  // handleRestoreSystemProxy — 手动还原系统代理。
+  // 应急出口：万一系统代理仍残留在我们的端口上（例如异常退出），用户可一键恢复直连。
+  const handleRestoreSystemProxy = async () => {
+    setProxyBusy(true);
+    setProxyMsg(null);
+    try {
+      await api.setSystemProxyEnabled(false);
+      await refreshProxy();
+      setProxyMsg({ text: t('settings.systemProxyRestored'), ok: true });
+    } catch (err) {
+      console.error('Failed to restore system proxy', err);
+      setProxyMsg({ text: `${t('settings.updateSystemProxyFailed')} ${String(err)}`, ok: false });
     } finally {
       setProxyBusy(false);
     }
@@ -511,7 +533,7 @@ if (e.target === e.currentTarget) onClose();
               <button type="button" className="btn" onClick={handleStop} disabled={proxyBusy || !proxy.running}>
                 {t('settings.stop')}
               </button>
-              {/* 绯荤粺浠ｇ悊寮€鍏炽€?*/}
+              {/* 系统代理开关 + 应急还原按钮。 */}
               <span style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto' }}>
                 <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t('settings.systemProxy')}</span>
                 <button
@@ -523,9 +545,26 @@ if (e.target === e.currentTarget) onClose();
                   onClick={handleSystemProxy}
                   disabled={proxyBusy}
                 />
+                {/* 仅在系统代理已开启时提供"还原"，保证用户随时能把机器恢复直连。 */}
+                {proxy.systemProxy && (
+                  <button
+                    type="button"
+                    className="btn"
+                    style={{ fontSize: 11, padding: '2px 6px' }}
+                    onClick={handleRestoreSystemProxy}
+                    disabled={proxyBusy}
+                    title={t('settings.systemProxyRestoreHint')}
+                  >
+                    {t('settings.restoreSystemProxy')}
+                  </button>
+                )}
               </span>
             </div>
             <div style={hintStyle}>{t('settings.portHint')}</div>
+            {/* 系统代理当前指向哪里：退出/停止时后端会还原它，这里让用户看得见。 */}
+            {proxy.systemProxy && (
+              <div style={hintStyle}>{t('settings.systemProxyTarget', { target: `127.0.0.1:${proxy.port}` })}</div>
+            )}
             {/* 端口内联错误（非法值 / 被占用）优先展示红色提示。 */}
             {portError && <div style={statusStyle(false)}>{portError}</div>}
             {/* 后端记录的启动失败原因（如启动时端口已被占用）：有操作消息时由其展示，避免重复。 */}

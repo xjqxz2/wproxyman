@@ -88,5 +88,38 @@ func (m platformManager) Status() bool {
 	return strings.TrimSpace(string(out)) == "'manual'"
 }
 
-// Current 返回空字符串（Linux 环境下无统一的代理地址获取方式）。
-func (platformManager) Current() string { return "" }
+// gsettingsGet 读取一个 gsettings 键的值，并去掉 gsettings 输出里的引号。
+func gsettingsGet(schema, key string) string {
+	out, err := exec.Command("gsettings", "get", schema, key).Output()
+	if err != nil {
+		return ""
+	}
+	return strings.Trim(strings.TrimSpace(string(out)), "'")
+}
+
+// Current 尽力读取当前生效的系统代理地址（"host:port"）。
+// GNOME 优先，其次 KDE；桌面环境差异较大，读不到时返回空串
+// （此时调用方只能依赖自己持久化的记录来判断代理归属）。
+func (platformManager) Current() string {
+	if mode := gsettingsGet("org.gnome.system.proxy", "mode"); mode != "" {
+		if mode != "manual" {
+			return ""
+		}
+		host := gsettingsGet("org.gnome.system.proxy.http", "host")
+		port := gsettingsGet("org.gnome.system.proxy.http", "port")
+		if host == "" || port == "" || port == "0" {
+			// 有些环境只配了 https
+			host = gsettingsGet("org.gnome.system.proxy.https", "host")
+			port = gsettingsGet("org.gnome.system.proxy.https", "port")
+		}
+		if host == "" || port == "" || port == "0" {
+			return ""
+		}
+		return Normalize(host + ":" + port)
+	}
+	// KDE Plasma：kioslaverc 中的 httpProxy 形如 "http://127.0.0.1:10086"
+	if out, err := exec.Command("kreadconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpProxy").Output(); err == nil {
+		return Normalize(strings.TrimSpace(string(out)))
+	}
+	return ""
+}

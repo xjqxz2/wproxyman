@@ -104,19 +104,65 @@ func (m platformManager) Clear() error {
 	return nil
 }
 
-// Status 检查首个网络服务的 HTTP 代理是否已启用。
-func (m platformManager) Status() bool {
-	services := networkServices()
-	if len(services) == 0 {
-		return false
+// parseProxyInfo 解析 networksetup -getwebproxy / -getsecurewebproxy 的输出：
+//
+//	Enabled: Yes
+//	Server: 127.0.0.1
+//	Port: 10086
+//	Authenticated Proxy Enabled: 0
+func parseProxyInfo(out string) (enabled bool, server, port string) {
+	for _, line := range strings.Split(out, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok {
+			continue
+		}
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		switch key {
+		case "Enabled":
+			enabled = strings.EqualFold(value, "Yes")
+		case "Server":
+			server = value
+		case "Port":
+			port = value
+		}
 	}
-	// 检查第一个网络服务（通常是 Wi-Fi）
-	out, err := exec.Command("networksetup", "-getwebproxy", services[0]).Output()
-	if err != nil {
-		return false
-	}
-	return strings.Contains(string(out), "Enabled: Yes")
+	return enabled, server, port
 }
 
-// Current 返回空字符串（macOS 的代理按网络服务分别配置，无统一值）。
-func (platformManager) Current() string { return "" }
+// Status 检查是否有任一网络服务启用了 HTTP/HTTPS 代理。
+// （早期实现只看第一个网络服务，用户在 Wi-Fi + 以太网并存时会误报。）
+func (m platformManager) Status() bool {
+	for _, svc := range networkServices() {
+		for _, cmd := range []string{"-getwebproxy", "-getsecurewebproxy"} {
+			out, err := exec.Command("networksetup", cmd, svc).Output()
+			if err != nil {
+				continue
+			}
+			if enabled, _, _ := parseProxyInfo(string(out)); enabled {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Current 返回当前生效的系统代理地址（"host:port"）；没有启用代理时返回空串。
+//
+// macOS 的代理按网络服务分别配置，这里返回第一个启用代理的服务上的地址。
+// 该值用于判断"系统代理是不是我们设的"，因此必须真实可读——早期版本直接
+// 返回空串，导致 App.shutdown 的所有权判断永远不成立，退出后系统代理残留。
+func (platformManager) Current() string {
+	for _, svc := range networkServices() {
+		for _, cmd := range []string{"-getwebproxy", "-getsecurewebproxy"} {
+			out, err := exec.Command("networksetup", cmd, svc).Output()
+			if err != nil {
+				continue
+			}
+			enabled, server, port := parseProxyInfo(string(out))
+			if enabled && server != "" && port != "" && port != "0" {
+				return Normalize(server + ":" + port)
+			}
+		}
+	}
+	return ""
+}

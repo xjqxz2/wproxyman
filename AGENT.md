@@ -77,7 +77,7 @@ internal/
 - **禁止在代理热路径同步 emit**：Windows 上 EventsEmit 是同步 ExecJS，会卡代理。
 - **禁止使用 `fillRequestBody`/`applyResponse`**（死代码）；新 body 逻辑走 `bodySpool`/`captureResponse`。
 - **HAR 二进制有损**：导出仅标记 `encoding:"base64"` 但未真正编码，导入不解码——二进制 body 无法经 HAR 无损往返（不要"修复"成真编码，除非同步改导入端 + 前端）。
-- **系统代理只在自己端口上清理**：`shutdown` 先比对 `Current()` 再 `Clear()`，勿无条件清（会覆盖其他工具代理）。
+- **系统代理的所有权判断靠持久化记录，不靠 `Current()`**：`settings.SystemProxyTarget` 记录我们最后写进系统代理的地址，退出/停止/启动自愈都以它为主依据，`Current()` 只作兜底——它在部分平台（旧版 darwin/linux）读回来是空串，曾导致 macOS 上退出时永远不还原、用户断网。`Clear()` 只在"确实是我们的"时候调用，能读到当前值且不匹配时说明别的程序接管了，绝不动它。系统代理的开关/还原统一收敛到 `applySystemProxy` / `clearSystemProxy`，不要在别处直接调 `sysProxy.Apply/Clear`。
 - **`GetFlows` 返回浅拷贝共享指针**：改返回的 Flow 会改到 store 内对象；`SaveSession` 在解锁后改 `IsSaved` 有潜在竞态，勿模仿。
 
 ## 命令

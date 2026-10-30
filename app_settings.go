@@ -49,6 +49,15 @@ type Settings struct {
 	Theme             string              `json:"theme"` // "dark" | "light"
 	ToolConfig        *tools.EngineConfig `json:"toolConfig"`
 	MaxBodyBytes      int64               `json:"maxBodyBytes"`
+
+	// SystemProxyEnabled 是"用户希望抓包时接管系统代理"的意图。关掉抓包时会
+	// 还原系统代理，但保留这个意图，下次启动/恢复抓包时自动重新接管。
+	SystemProxyEnabled bool `json:"systemProxyEnabled"`
+
+	// SystemProxyTarget 记录我们最后写进系统代理的地址（"host:port"，空表示没设过）。
+	// 退出/停止/崩溃自愈时靠它判断"这个系统代理是不是我们设的"——
+	// 不能依赖 Manager.Current()，因为部分平台读不到当前值（见 systemproxy 包说明）。
+	SystemProxyTarget string `json:"systemProxyTarget"`
 }
 
 func settingsPath() string {

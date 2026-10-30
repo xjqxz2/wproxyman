@@ -60,6 +60,10 @@ type App struct {
 	// 其他程序占用）。前端据此在设置面板给出"请改端口"的可操作提示。
 	lastProxyErr string
 
+	// cleanupOnce 保证清理逻辑（还原系统代理、停止代理、关闭事件泵）只执行一次：
+	// 正常退出走 Wails 的 OnShutdown，被信号终止走 Cleanup，两者可能都触发。
+	cleanupOnce sync.Once
+
 	// 事件泵：Windows 上 EventsEmit 是同步 ExecJS，直接调用会阻塞代理
 	// handler goroutine。所有事件都先入这个有界队列，由单个泵 goroutine
 	// 异步投递到前端。
@@ -151,9 +155,16 @@ func (a *App) startup(ctx context.Context) {
 	if a.settings.AutoStartProxy {
 		if _, err := a.startProxy(0); err != nil {
 			println("WProxyman: failed to start proxy:", err.Error())
+			// 崩溃/强杀后系统代理可能还指着我们，而这次代理没起来 —— 必须还原，
+			// 否则用户表现为"完全没网"。
+			if a.healStaleSystemProxy() {
+				println("WProxyman: stale system proxy restored")
+			}
 		} else if err := a.SetSystemProxyEnabled(true); err != nil {
 			println("WProxyman: failed to set system proxy:", err.Error())
 		}
+	} else if a.healStaleSystemProxy() {
+		println("WProxyman: stale system proxy restored")
 	}
 	// Refresh the cached certificate-trust state.
 	a.refreshCertInstalled()
@@ -231,18 +242,135 @@ func (a *App) certTrusted() bool {
 	return a.certInstalled
 }
 
-// shutdown stops the proxy and restores the system proxy on exit — but only
-// if it still points at our own proxy (never clobber another tool's proxy).
+// shutdown stops the proxy and restores the system proxy on exit.
+//
+// 关键：退出前必须还原系统代理，否则用户会表现为"完全没网"。
+// 判断"是不是我们设的"依赖持久化记录（settings.SystemProxyTarget），
+// 而不是 Manager.Current()——后者在 macOS/Linux 上读不到，曾导致
+// macOS 上退出时永远不还原。
 func (a *App) shutdown(ctx context.Context) {
-	close(a.stopPump)
-	if a.proxySrv != nil {
-		cur := a.sysProxy.Current()
-		want := fmt.Sprintf("127.0.0.1:%d", a.proxySrv.Port())
-		if cur == want || cur == "localhost:"+fmt.Sprint(a.proxySrv.Port()) {
-			_ = a.sysProxy.Clear()
+	a.cleanupOnce.Do(func() {
+		close(a.stopPump)
+		if a.systemProxyIsOurs() {
+			_ = a.clearSystemProxy()
 		}
-		a.proxySrv.Stop()
+		if a.proxySrv != nil {
+			a.proxySrv.Stop()
+		}
+	})
+}
+
+// Cleanup 执行与正常退出相同的清理，供信号处理等非 Wails 退出路径调用
+// （例如被 SIGTERM 终止时）。可重复调用。
+func (a *App) Cleanup() {
+	a.shutdown(context.Background())
+}
+
+// --- 系统代理所有权判断与收敛点 ---
+
+// systemProxyAddr 返回我们写入系统代理时使用的地址。
+func systemProxyAddr(port int) string {
+	return fmt.Sprintf("127.0.0.1:%d", port)
+}
+
+// systemProxyIntent 返回用户是否希望抓包时接管系统代理。
+func (a *App) systemProxyIntent() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.settings.SystemProxyEnabled
+}
+
+// systemProxyTarget 返回我们最后写入的系统代理地址（空 = 没设过）。
+func (a *App) systemProxyTarget() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.settings.SystemProxyTarget
+}
+
+// systemProxyPointsTo 判断系统代理当前是否正指向 addr。
+// 平台读不到当前值（返回空串）时按"否"处理，由调用方决定是否重新写入。
+func (a *App) systemProxyPointsTo(addr string) bool {
+	cur := a.sysProxy.Current()
+	if cur == "" {
+		return false
 	}
+	return systemproxy.Normalize(cur) == systemproxy.Normalize(addr)
+}
+
+// systemProxyIsOurs 判断系统代理当前是否由我们设置（决定退出/停止时是否还原）。
+//
+// 规则：
+//  1. 有持久化记录（SystemProxyTarget）→ 以记录为准；若平台能读到当前值且
+//     当前值不是我们的地址，说明已被别的程序改写，此时不动它（不抢别人的代理）；
+//  2. 没有记录（旧版本遗留）→ 只能靠平台读到的当前值与我们配置端口比对，
+//     读不到就不动（宁可不还原，也不误清别人的代理）。
+func (a *App) systemProxyIsOurs() bool {
+	target := a.systemProxyTarget()
+	if target == "" {
+		a.mu.RLock()
+		port := normalizeProxyPort(a.settings.ProxyPort)
+		a.mu.RUnlock()
+		if port == 0 || !a.sysProxy.Status() {
+			return false
+		}
+		return a.systemProxyPointsTo(systemProxyAddr(port))
+	}
+	cur := a.sysProxy.Current()
+	if cur == "" {
+		return true
+	}
+	return systemproxy.Normalize(cur) == systemproxy.Normalize(target)
+}
+
+// applySystemProxy 把系统代理指向当前代理端口，并记录"我们设过它"。
+func (a *App) applySystemProxy() error {
+	if !a.IsProxyRunning() {
+		return fmt.Errorf("代理未运行：请先启动代理（端口 %d），再开启系统代理", a.GetProxyPort())
+	}
+	port := a.GetProxyPort()
+	addr := systemProxyAddr(port)
+	// 已经指向我们就只补记录，避免重复调用平台命令（macOS 上要遍历所有网络服务）。
+	if !a.systemProxyPointsTo(addr) {
+		if err := a.sysProxy.Apply(systemproxy.Proxy{
+			Host:   "127.0.0.1",
+			Port:   port,
+			Bypass: []string{"localhost", "127.0.0.1", "::1"},
+		}); err != nil {
+			a.emitProxyStatus()
+			return err
+		}
+	}
+	a.mu.Lock()
+	a.settings.SystemProxyEnabled = true
+	a.settings.SystemProxyTarget = addr
+	a.mu.Unlock()
+	_ = a.saveSettings()
+	a.emitProxyStatus()
+	return nil
+}
+
+// clearSystemProxy 关闭系统代理并清除"我们设过它"的记录（保留用户意图，
+// 以便下次抓包时自动重新接管）。
+func (a *App) clearSystemProxy() error {
+	err := a.sysProxy.Clear()
+	a.mu.Lock()
+	a.settings.SystemProxyTarget = ""
+	a.mu.Unlock()
+	_ = a.saveSettings()
+	a.emitProxyStatus()
+	return err
+}
+
+// healStaleSystemProxy 还原"残留"的系统代理：系统代理还指向我们，但代理并没有
+// 在运行（崩溃/强杀后启动失败、或本次不自动启动代理）。
+// 不做这件事的话，用户看到的是"打开电脑就没网"。
+// 返回值表示是否执行了还原。
+func (a *App) healStaleSystemProxy() bool {
+	if a.IsProxyRunning() || !a.systemProxyIsOurs() {
+		return false
+	}
+	_ = a.clearSystemProxy()
+	return true
 }
 
 // --- Proxy control ---
@@ -365,6 +493,13 @@ func (a *App) startProxy(port int) (int, error) {
 	a.mu.Unlock()
 
 	_ = a.saveSettings()
+	// 暂停后再恢复抓包：如果用户此前让代理接管了系统代理，重新指向当前端口
+	// （端口可能已被用户改过）。失败不阻断抓包，仅记录。
+	if a.systemProxyIntent() && !a.systemProxyPointsTo(systemProxyAddr(actual)) {
+		if err := a.applySystemProxy(); err != nil {
+			println("WProxyman: failed to restore system proxy:", err.Error())
+		}
+	}
 	// NOTE: must not call a.mu-protected helpers while holding the lock above
 	// (emitProxyStatus → IsProxyRunning → RLock would self-deadlock).
 	a.emitProxyStatus()
@@ -379,6 +514,9 @@ func (a *App) StartProxy(port int) (int, error) {
 // StopProxy stops the proxy. Pausing is a session-only state: the app always
 // resumes capturing on the next launch (Proxyman behavior), so we never
 // persist autoStartProxy=false.
+//
+// 停止抓包必须同时还原系统代理：否则整机流量会打到一个已经没人监听的端口上
+// （表现为"断网"）。用户的接管意图会保留，下次启动抓包时自动重新接管。
 func (a *App) StopProxy() error {
 	a.mu.Lock()
 	if a.proxySrv == nil {
@@ -389,6 +527,9 @@ func (a *App) StopProxy() error {
 	a.proxySrv = nil
 	a.mu.Unlock()
 	srv.Stop()
+	if a.systemProxyIsOurs() {
+		_ = a.clearSystemProxy()
+	}
 	a.emitProxyStatus()
 	return nil
 }
@@ -474,25 +615,18 @@ func (a *App) emitProxyStatus() {
 // --- System proxy ---
 
 // SetSystemProxyEnabled enables/disables the OS proxy pointing at our port.
+//
+// 开启/关闭都收敛到 applySystemProxy / clearSystemProxy 两个内部方法，
+// 保证"记录我们写过什么"与系统设置始终一致（退出与崩溃自愈都靠这个记录）。
 func (a *App) SetSystemProxyEnabled(enabled bool) error {
 	if !enabled {
-		return a.sysProxy.Clear()
+		a.mu.Lock()
+		a.settings.SystemProxyEnabled = false
+		a.mu.Unlock()
+		return a.clearSystemProxy()
 	}
 	// 代理没在运行时把系统代理指向它，会让整机流量打到无人监听的端口上。
-	if !a.IsProxyRunning() {
-		return fmt.Errorf("代理未运行：请先启动代理（端口 %d），再开启系统代理", a.GetProxyPort())
-	}
-	port := a.GetProxyPort()
-	if port == 0 {
-		return nil
-	}
-	err := a.sysProxy.Apply(systemproxy.Proxy{
-		Host:   "127.0.0.1",
-		Port:   port,
-		Bypass: []string{"localhost", "127.0.0.1", "::1"},
-	})
-	a.emitProxyStatus()
-	return err
+	return a.applySystemProxy()
 }
 
 // GetSystemProxyEnabled reports whether the OS proxy is set.

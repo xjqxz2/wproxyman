@@ -15,6 +15,9 @@ package main
 
 import (
 	"embed"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -28,6 +31,16 @@ var assets embed.FS
 
 func main() {
 	app := NewApp()
+
+	// 被信号终止（kill / 终端 Ctrl-C / 会话注销）时 Wails 不保证调用 OnShutdown，
+	// 这里补一条清理路径：还原系统代理并停止本地代理，避免退出后整机断网。
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		app.Cleanup()
+		os.Exit(0)
+	}()
 
 	err := wails.Run(&options.App{
 		Title:     "WProxyman",

@@ -101,19 +101,34 @@ func (platformManager) Status() bool {
 	return err == nil && v == 1
 }
 
-// Current 返回当前配置的代理服务器地址。
-// 读取注册表中的 ProxyServer 值。
+// Current 返回当前生效的系统代理地址（"host:port"）；未启用时返回空串。
+//
+// 注意两点（早期实现都有问题，会让"代理是不是我们设的"判断失真）：
+//   - ProxyEnable=0 时必须返回空串，不能只看 ProxyServer（Clear 故意保留该值）；
+//   - ProxyServer 可能是 "http=host:port;https=host:port" 这种按协议分写的格式。
 func (platformManager) Current() string {
 	k, err := registry.OpenKey(registry.CURRENT_USER, ieSettingsKey, registry.QUERY_VALUE)
 	if err != nil {
 		return ""
 	}
 	defer k.Close()
+	if v, _, err := k.GetIntegerValue("ProxyEnable"); err != nil || v != 1 {
+		return ""
+	}
 	s, _, err := k.GetStringValue("ProxyServer")
 	if err != nil {
 		return ""
 	}
-	return s
+	for _, part := range strings.Split(s, ";") {
+		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "http") {
+			return Normalize(value)
+		}
+	}
+	return Normalize(s)
 }
 
 // notifyWinINet 通过 wininet.dll 通知系统代理设置已变更。

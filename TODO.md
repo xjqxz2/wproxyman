@@ -1,0 +1,346 @@
+# WProxyman 迭代 TODO
+
+> 状态图例：`[ ]` 未开始 · `[~]` 进行中 · `[x]` 已完成
+> 每一项固定包含：**目标 / 现状证据 / 设计要点 / 子任务 / 验收标准 / 预估**
+> 执行顺序：P0 → P1 → P2 → P3；同优先级内按「价值 ÷ 成本」排序。
+> 约定：每项完成后补测试（Go 单测 + 前端 tsc），并更新 README/AGENT.md 中受影响的部分。
+
+## 进度总览
+
+| 优先级 | 项目 | 状态 | 预估 |
+|---|---|---|---|
+| P0 | 系统代理未恢复（关闭软件后断网） | `[x]` 已完成（v1.0.7） | 1 天 |
+| P1 | 流式转发 + SSE / LLM 视图（OpenAI / Anthropic / 非标） | `[ ]` | 6–8 天 |
+| P1 | MCP Server：让 AI 查询并控制抓包配置 | `[ ]` | 4–6 天 |
+| P2 | 手机一键接入（二维码 / iOS 描述文件 / adb） | `[ ]` | 2 天 |
+| P2 | WebSocket 双向：手动发帧 / 重放 / 二进制解析 | `[ ]` | 2–3 天 |
+| P3 | GraphQL 专用视图（操作名聚合 + variables 重放） | `[ ]` | 3 天 |
+| P3 | gRPC / Protobuf 解码（无 schema → proto → reflection） | `[ ]` | 8–10 天 |
+
+---
+
+## P0 · 系统代理未恢复：关闭软件后系统断网
+
+**目标**：无论正常退出、面板停止、换端口还是崩溃强杀，系统代理都不会残留在"指向一个已经没人监听的端口"的状态。
+
+### 现状与证据（已定位，共 4 条独立成因）
+
+1. **主因：macOS / Linux 下 `Current()` 恒为空串**，导致 `shutdown()` 的守卫永远不成立，`Clear()` 一次都不会执行。
+   - `internal/systemproxy/darwin.go` 末尾：`func (platformManager) Current() string { return "" }`
+   - `internal/systemproxy/linux.go:92`：同上
+   - `app.go:237-244`：`if cur == want || cur == "localhost:..." { Clear() }`
+   - → 只有 Windows 的 `Current()` 读了注册表，所以这个 bug 在 macOS 上 100% 复现。
+2. **面板"停止"不清系统代理**：`SettingsPanel.tsx` 的 handleStop 只调 `api.stopProxy()`；而 `StopProxy()`（app.go）只停服务器，不动系统代理 → 停止抓包后整机流量打到死端口。
+3. **改端口后系统代理不跟随**：`SetSettings` 重启到新端口，但不重新 `Apply` → 系统代理仍指向旧端口。
+4. **崩溃/强杀无自愈**：进程被 kill 时 `shutdown()` 不执行；下次启动若代理又启动失败（端口被占），旧的系统代理仍然残留，用户表现为"完全没网"。
+
+### 设计要点
+
+- **不再依赖 `Current()` 做判断**：新增持久化标记 `settings.SystemProxyApplied bool` + `settings.SystemProxyTarget string`（如 `127.0.0.1:10086`），作为"这是我们设的"的权威依据；跨平台一致。
+- 让 `Current()` 在 macOS 上真正可用（解析 `networksetup -getwebproxy/-getsecurewebproxy` 各服务的 `Enabled/Server/Port`），Windows 的 `Current()` 也补上"端口必须匹配"的校验；作为第二道保险。
+- **单一收敛点**：把「系统代理的开启/关闭」收敛到一个内部方法（如 `applySystemProxyForPort(port)`），任何端口变化/停止/启动都只走它，避免多处遗漏。
+- **兜底清理**：`main.go` 捕获 SIGINT/SIGTERM 执行一次 best-effort 清理；启动时若 `SystemProxyApplied==true` 但代理启动失败 → 立即 `Clear()` 并在 UI 提示"已还原系统代理，因为代理端口被占用"。
+- UI 增加显式的「立即还原系统代理」按钮 + 当前指向的目标展示（`系统代理：127.0.0.1:10086` / `已失效`）。
+
+### 子任务
+
+- [x] `systemproxy`：`Proxy` 增加目标标识；macOS 实现真正的 `Current()`；Windows `Current()` 校验端口；补 `systemproxy` 单测（可用假命令输出）
+- [x] `Settings`：新增 `systemProxyApplied` / `systemProxyTarget` 字段（含向后兼容默认值）
+- [x] `app.go`：抽出 `applySystemProxyForPort`；`StopProxy` / `startProxy` / `SetSettings` 端口变化时统一收敛处理
+- [x] `shutdown()`：改为「标记为已应用 或 当前值匹配」即清理
+- [x] `startup()`：自愈逻辑（代理启动失败 → 还原系统代理 + 提示）
+- [x] `main.go`：SIGINT/SIGTERM 清理
+- [x] 前端：设置面板加「还原系统代理」按钮与失效状态提示；停止抓包时提示系统代理已一并还原
+- [x] 测试：用假 `Manager`（接口已存在，可注入）覆盖 4 条路径：正常退出 / 面板停止 / 换端口 / 启动自愈
+
+### 实际实现（v1.0.7）
+
+- **所有权判断改用持久化记录**：`settings.SystemProxyTarget`（我们最后写入的地址）+ `settings.SystemProxyEnabled`（用户意图）。`Current()` 退为兜底：能读到且与我们记录不符 → 认为已被别的程序接管，**不清**（不抢别人的代理）；读不到（Linux 部分桌面）→ 信任记录。
+- **macOS `Current()` 真正实现**：解析 `networksetup -getwebproxy/-getsecurewebproxy` 的 `Enabled/Server/Port`，返回第一个启用服务的地址；`Status()` 从"只看第一个网络服务"改为"任一服务启用即为 true"。
+- **Windows `Current()` 修正**：`ProxyEnable=0` 时返回空串（Clear 会保留 ProxyServer 值，旧实现会误报）；支持 `http=host:port;https=...` 分写格式。
+- **Linux `Current()` 尽力实现**：GNOME（`mode=manual` + http/https 的 host/port）优先，其次 KDE `kioslverc`；读不到返回空串。
+- **收敛点**：新增 `applySystemProxy` / `clearSystemProxy` / `systemProxyIsOurs` / `healStaleSystemProxy`；`SetSystemProxyEnabled`、`StopProxy`、`startProxy`、`startup`、`shutdown` 全部走它们。
+- **停止抓包即还原**：`StopProxy` 会还原系统代理但保留用户意图，下次启动/恢复抓包自动重新接管（含端口变化后跟随新端口）。
+- **崩溃自愈**：启动时若系统代理仍指向我们、而代理没能起来（端口被占用等）→ 立即还原，避免"开机就没网"。
+- **信号兜底**：`main.go` 捕获 SIGINT/SIGTERM 调用 `Cleanup()`；清理用 `sync.Once` 保证只执行一次（信号与 Wails OnShutdown 可能都触发）。
+- **UI**：显示"系统代理 → 127.0.0.1:10086"，并提供「还原」应急按钮；停止抓包时提示已还原。
+- **测试**：新增 `app_sysproxy_test.go`（假 Manager 注入，9 个用例）+ `internal/systemproxy/systemproxy_test.go`（地址归一化）；另加 `main_test.go` 把用户配置目录重定向到临时目录，避免测试覆盖开发者真实的 settings.json。
+- **变异测试验证**：把 `systemProxyIsOurs` 临时退化回"只凭 Current() 判断"的旧逻辑，核心回归用例立即 FAIL（`Clear called 0 times`），证明该测试确实守住这个 bug。
+
+### 验收标准
+
+- macOS 上：开抓包 → 直接关窗口 → `networksetup -getwebproxy Wi-Fi` 显示 `Enabled: No`；
+- 面板点「停止」后系统代理立即还原，且不影响局域网设备抓包（AllowLAN 场景下手机仍可连）；
+- 运行中改端口 → 系统代理自动指向新端口；
+- `kill -9` 后重启应用且 10086 被占用 → 启动即自动还原系统代理并提示。
+
+**预估**：1 天（含测试）。**风险**：macOS `networksetup` 需要管理员权限，`Apply/Clear` 的错误目前被吞掉，需一并改为回传并提示。
+
+---
+
+## P1 · 流式转发 + SSE / LLM 视图
+
+**目标**：流式响应（SSE、LLM 逐 token、chunked）能实时透传并在界面上逐条还原；内置 OpenAI / Anthropic 兼容解析，且任何私有 SSE 协议都能通过自定义规则解析。
+
+### 现状与证据（这是一个功能缺口，不只是"视图不好看"）
+
+- 全仓库 grep `event-stream|Flush|flush` **零命中** → 目前完全没有流式处理。
+- `internal/proxy/http_forward.go:174-205` `captureResponse` 用 `io.ReadAll(io.LimitReader(...))` **把整个响应体读完**，再由 `writeResponseFromFlow` 写给客户端。
+- 后果：**所有流式接口在开启解密时都被缓冲到结束才返回**——LLM 逐 token 输出会一直卡住，长时间流会被 `MaxBodyBytes` 截断，无限流永不返回。这同时也是 #11（gRPC streaming）与 #13（WebSocket 之外的实时协议）的公共底座。
+
+### 设计要点
+
+**后端（流式转发）**
+- 识别流式响应（`Content-Type: text/event-stream`、`Transfer-Encoding: chunked`、或 `application/grpc` 的 server-streaming），进入"边转发边采集"模式：
+  - 一边按块 `Flush()` 给客户端（保持 `http.Flusher`），一边解析事件、更新 Flow、推送 `flow:sse` 事件给前端；
+  - 保留上限保护：正文累积超过 `MaxBodyBytes` 时只停止**保存**，不中断**转发**（当前语义相反，会截断上游）。
+- SSE 解析器：`event:` / `data:` / `id:` / `retry:` / 注释行(`:`)、多行 data 合并、`\n\n` 分帧、`[DONE]` 哨兵。
+- 事件按序号 + 到达时间戳存储（`models.SSEMessage{Seq, Event, Data, AtMs, Size}`），Flow 增加 `IsStream bool` + `SSEMsgs []SSEMessage`。
+
+**前端（视图）**
+- `text/event-stream` 自动切到 "Stream" 标签页：时间线（序号 / 相对时间 / 间隔 / 大小 / event 名），可暂停自动滚动、可过滤事件类型。
+- 双视图：**原始帧** ↔ **累积还原**（把增量拼成最终完整内容，OpenAI/Anthropic 直接显示成可读文本/JSON）。
+- 会话级汇总：总时长、首字节时间(TTFB)、token 速率（由解析器给出）。
+
+**OpenAI 兼容模式（预设解析器）**
+- `chat.completions` 流：`choices[].delta.content` / `reasoning_content` / `tool_calls[]` 分片拼接 / `finish_reason`；`stream_options.include_usage` 的 usage 汇总；`[DONE]`。
+- 新版 `responses` API 的语义事件：`response.output_text.delta`、`response.reasoning_summary_text.delta`、`response.completed` 等。
+- 兼容任何走 OpenAI 协议的自建服务（vLLM / Ollama / one-api / DeepSeek / Qwen 等）——按报文结构嗅探，不按域名白名单。
+
+**Anthropic 兼容模式（预设解析器）**
+- `message_start` / `content_block_start` / `content_block_delta`（`text_delta`、`input_json_delta`、`thinking_delta`）/ `content_block_stop` / `message_delta` / `message_stop` / `ping` / `error`；把 `tool_use` 的 JSON 分片拼成完整入参。
+
+**其它非标 SSE**
+- 通用兜底：未识别协议也照常按"event 名 + 原始 data + 时间"渲染，不丢数据。
+- **自定义解析规则**：用户可配 JSONPath（如 `$.choices[0].delta.content`）指定"增量字段"，从而把私有 SSE 也拼成累积文本；规则可保存复用（与后续 Rules 体系共用存储）。
+
+### 子任务
+
+- [ ] `models`：`SSEMessage` 结构 + Flow 字段（`isStream` / `sseMessages` / `firstByteAt`）
+- [ ] `internal/proxy`：流式透传改造（`http_forward.go` / `handler.go`），含 Flush、截断语义修正
+- [ ] `internal/proxy/sse.go`：SSE 解析器 + 单测（分帧、多行 data、注释、`[DONE]`、UTF-8 跨块边界）
+- [ ] `internal/sse`：OpenAI / Anthropic 预设解析器 + 单测（用真实报文样本）
+- [ ] 自定义 JSONPath 解析规则（配置存储 + 执行）
+- [ ] 事件推送：`flow:sse` 增量事件（避免整条 flow 反复过桥）
+- [ ] 前端：Stream 标签页、时间线、原始/累积双视图、TTFB 与速率
+- [ ] 前端：自定义解析规则编辑器（放在 Settings 或 tool 页）
+- [ ] 文档：README 增加"调试 LLM 应用"章节
+
+### 验收标准
+
+- 用 `curl` 打一个 SSE/LLM 流，客户端**逐条**收到（不被缓冲），界面同步逐条出现；
+- OpenAI 与 Anthropic 两种流都能在"累积视图"中看到完整可读回复（含 tool_calls / tool_use 拼接正确）；
+- 一个自造的私有 SSE 协议，通过自定义 JSONPath 规则也能拼出累积文本；
+- 关闭"SSL 解密"时行为不变（隧道直通）。
+
+**预估**：后端流式改造 3–4 天；OpenAI/Anthropic 解析 3 天；自定义规则 + 导出 1–2 天。**依赖**：无（建议在 P1 先做，因为它是 #11 streaming 的前置）。
+
+---
+
+## P1 · MCP Server：让 AI 查询并控制抓包
+
+**目标**：`Claude / Cursor / 其它 MCP 客户端` 能读取抓到的流量、并按用户授权修改抓包配置（SSL 解密、Map Local、Block List、限速等）。
+
+### 现状与证据
+
+- 仓库内无任何 MCP 相关代码；工具配置全部通过 `App` 结构体的 Wails 方法暴露（`app_tools.go` / `app_settings.go`），没有对外的本地 RPC 通道。
+- 现有查询接口粒度太粗：`GetFlows()` 一次返回**全部** flow（含 body），不适合给 AI 用（上下文爆炸）。
+
+### 设计要点
+
+**形态（两个入口，共用一套能力层）**
+1. **本地 HTTP MCP（首选）**：app 内在 `127.0.0.1:<随机端口>` 起一个 streamable-HTTP MCP 端点，UI 显示 URL + 一次性 token，客户端填 URL 即可用。
+2. **stdio 包装子命令 `wproxyman mcp`**（次选）：给 Claude Desktop 这类只支持 stdio 的客户端用，内部转发到上面的本地端点。
+
+**能力层（先只读，后写操作）**
+
+| 类型 | 名称 | 说明 |
+|---|---|---|
+| tool | `list_flows` | 过滤（host/method/status/时间/仅失败/仅流式）+ 分页 + 字段裁剪 |
+| tool | `get_flow` | 单条详情；body 可截断或按需分段取 |
+| tool | `search_flows` | 正文全文搜索 |
+| tool | `get_stats` | 域名 TOP / 慢请求 TOP / 状态码分布 / 流量体积 |
+| resource | `flows://recent` / `rules://current` | 只读资源 |
+| prompt | `explain_flow` / `draft_rule` | 提示模板，引导 AI 输出解释或规则草案 |
+| tool（写） | `set_ssl_proxy`、`add_map_local`、`add_map_remote`、`add_block_rule`、`set_network_condition`、`clear_flows`、`start_proxy` / `stop_proxy`、`set_upstream_proxy` | 修改抓包配置 |
+
+**安全（必须做，不能省）**
+- 只监听 `127.0.0.1`；token 每次启动随机生成，可在 UI 一键吊销；
+- **写操作默认关闭**，需要用户在设置里显式打开「允许 AI 修改配置」；开启后 UI 常驻提示；
+- 审计日志：每次写操作记录"时间 / 工具名 / 参数 / 结果"，可在设置里查看；
+- 破坏性操作（`clear_flows`、`stop_proxy`）要求 MCP 客户端二次确认（工具层返回 `requires_confirmation`）。
+
+### 子任务
+
+- [ ] 后端：为 AI 优化的查询层（过滤/分页/字段裁剪/正文截断），并让前端复用同一实现（替换现在"全量返回"的 `GetFlows`）
+- [ ] 后端：MCP 协议实现（JSON-RPC 2.0 + `initialize` / `tools/list` / `tools/call` / `resources/*` / `prompts/*`）
+- [ ] 后端：本地 HTTP 端点 + token 鉴权 + 写操作开关 + 审计日志
+- [ ] 前端：设置面板新增 "MCP" 区块（开关、URL、token 复制/重置、允许写操作、审计日志）
+- [ ] `main.go`：`wproxyman mcp` stdio 子命令
+- [ ] 文档：README 增加接入 Claude / Cursor 的图文步骤
+- [ ] 测试：协议层单测（tools/list、鉴权失败、写操作关闭时的拒绝、审计落库）
+
+### 验收标准
+
+- 在 Claude/Cursor 里配置该 MCP 后，可以问"刚才那个 500 的请求是什么原因"，AI 通过 `list_flows` + `get_flow` 给出答案；
+- 未开启写操作时，任何写工具调用被拒并给出明确原因；
+- 开启写操作后，AI 能新增一条 Map Local 规则，且 UI 立即反映；审计日志有记录。
+
+**预估**：只读 2–3 天；写操作 + 安全审计 2 天；stdio 包装 1 天。**依赖**：查询层重构（同时让前端受益）。
+
+---
+
+## P2 · 手机一键接入
+
+**目标**：手机从"手抄 IP + 端口 + 手动装证书"变成"扫一个码就完成代理配置 + 证书安装"。
+
+### 现状与证据
+
+- Devices 区只列出裸 IP（`frontend/src/components/SettingsPanel.tsx`），证书地址是纯文本 URL；
+- 证书下载端点已存在（`/wpx-cert.pem` 与安装引导页 `/wpx-cert`），可以直接复用；
+- 端口已在上一轮固定为 10086，具备了"配置一次长期有效"的前提。
+
+### 设计要点
+
+- **二维码 3 张**（可切换）：① 代理地址 `IP:10086`；② 证书下载 `http://IP:10086/wpx-cert.pem`；③ iOS 描述文件 `http://IP:10086/wpx-mobileconfig`。前端用 `qrcode.react`（纯 JS，渲染 SVG 可缩放）。
+- **iOS `.mobileconfig`**（后端动态生成，XML plist）：一个描述文件里同时放 ① CA 根证书载荷（`com.apple.security.root`）② 代理载荷（`com.apple.SystemConfiguration` 的 `Proxies`：`HTTPEnable/HTTPProxy/HTTPPort` + `HTTPSEnable/...`）。装完即"代理 + 证书"一步到位；安装后仍需在"证书信任设置"里开启完全信任（页面明确提示）。
+- **Android**：给一键复制的 `adb shell settings put global http_proxy IP:10086`（含还原命令 `:0`）；证书走现有下载页。
+- **连通性自检**：Devices 区加"测试连接"按钮——从本机发起一次经 `IP:10086` 的请求，确认 AllowLAN 生效、防火墙已放行（首次连接常被系统防火墙拦）。
+- 记住上次选中的二维码，复制按钮带成功反馈。
+
+### 子任务
+
+- [ ] 后端：`/wpx-mobileconfig` 动态生成（含 LAN IP 探测 + CA 证书 base64），与 `/wpx-cert` 页互链
+- [ ] 后端：`GetLANIPs` 补"推荐地址"排序（优先 Wi-Fi/活动网卡）
+- [ ] 前端：`qrcode.react` 依赖 + Devices 区二维码切换与复制
+- [ ] 前端：adb 命令一键复制（配置/还原两条）
+- [ ] 前端：连通性测试按钮（后端新增 `TestLANConnectivity`）
+- [ ] i18n：中英文案
+- [ ] 文档：README 手机章节改写成"扫码三步走"
+
+### 验收标准
+
+- iPhone 扫描述文件二维码 → 安装 → 打开 Safari 抓 HTTPS 成功（仅"完全信任"需手动一次）；
+- Android 复制 adb 命令执行后，模拟器代理生效；
+- 未开 AllowLAN 时，测试连接给出明确提示（而不是静默失败）。
+
+**预估**：2 天。**依赖**：无。
+
+---
+
+## P2 · WebSocket 双向
+
+**目标**：不只是看 WebSocket 消息，还能手动发帧、改后重发、重放历史帧，并能读懂二进制帧。
+
+### 现状与证据
+
+- `models.WSMessage{Direction, Opcode, Data, Timestamp}` 已在采集；
+- 前端 `DetailPanel.tsx:429` 仅只读展示消息列表；
+- 后端无"向已建立连接发送帧"的接口。
+
+### 设计要点
+
+- 后端保留存活 WebSocket 连接的写入口：`SendWSFrame(flowID string, data []byte, isBinary bool)`；连接已关闭时返回明确错误；
+- 帧能力：文本/二进制发送、编辑后重发、按序号重放、批量重放（带间隔）；
+- 视图增强：按方向/opcode 过滤、JSON 自动美化、ping/pong 与 close 帧单列、帧大小与间隔、导出为 JSON/CSV；
+- 二进制帧：JSON 尝试美化；Protobuf 走 #11 的解码器（先做十六进制 + 字符串可见部分）。
+- 安全：发送前二次确认（会立刻影响对端），并在 UI 标注"帧已注入"。
+
+### 子任务
+
+- [ ] 后端：连接注册表（flowID → ws conn）+ `SendWSFrame` API + 单测
+- [ ] 后端：帧序号与方向修正（确保 seq 连续可用）
+- [ ] 前端：帧详情编辑框（Monaco）+ 发送/重发/批量重放
+- [ ] 前端：过滤、美化、导出
+- [ ] 文档：README/AGENT 记录"注入帧"的能力与风险
+
+### 验收标准
+
+- 对一个公开 WebSocket echo 服务：连上后能从界面手动发一条 JSON 并收到回显；
+- 连接关闭后发送按钮禁用并提示原因；
+- 二进制帧以十六进制 + 可打印字符串展示。
+
+**预估**：2–3 天。
+
+---
+
+## P3 · GraphQL 专用视图
+
+**目标**：GraphQL 请求按"操作名"可读、可搜索、可重放。
+
+### 现状与证据
+
+- `frontend/src/types.ts` 中仅把 `application/graphql` 归为文本类型用于展示；
+- 后端无任何 query/variables/operationName 解析。
+
+### 设计要点
+
+- 嗅探式识别（不能只靠 content-type）：POST + JSON body 含 `query` 字段、GET + `?query=`、以及 `application/graphql`；
+- 提取 `operationName` / `operationType`（query|mutation|subscription）/ `variables`，写入 Flow 新字段；
+- 列表：新增"操作名"列与按操作名聚合的侧栏分组（与 Domains 平级）；
+- 详情："GraphQL" 标签页：query 高亮（Monaco graphql 语法）、variables 表单可编辑、一键送 Compose/Repeater 重放；
+- 错误高亮：`errors[].path` / `errors[].message` 定位到对应字段；批处理（数组 body）逐条展开。
+
+### 子任务
+
+- [ ] 后端：解析器 + Flow 字段（`graphqlOperation` / `graphqlType` / `graphqlVariables`）
+- [ ] 前端：列表列 + 侧栏分组
+- [ ] 前端：GraphQL 标签页 + variables 重放（复用 Compose 通路）
+- [ ] 测试：解析器单测（POST/GET/批处理/无 operationName 的匿名查询）
+
+**验收标准**：任意 GraphQL 接口的请求能在列表中直接看到操作名，并能在详情页改 variables 后重放。
+
+**预估**：3 天。
+
+---
+
+## P3 · gRPC / Protobuf 解码
+
+**目标**：gRPC 流量可读 —— 拆帧、看状态、并在有 schema 时显示字段名。
+
+### 现状与证据
+
+- HTTP/2 已支持（`internal/proxy/h2_test.go`），但 body 按二进制处理；
+- 无 gRPC 帧拆分、无 protobuf 解析、无 `.proto` 导入入口。
+
+### 设计要点（分三步走，每步独立可用）
+
+1. **无 schema 结构化**（先做，收益最直接）：按 gRPC 帧格式（1 字节压缩标志 + 4 字节长度）拆出多条 message，按 protobuf wire format 递归解出字段号 + wire type + 原始值（长度分隔字段可见可打印字符串）。没有 `.proto` 也能看出结构，比一堆乱码强得多。
+2. **导入 `.proto`**：用户导入 proto 文件（或目录），动态编译 descriptor（`protocompile` / `jhump/protoreflect`），按方法名匹配 message 类型，显示真实字段名与嵌套结构。
+3. **Server Reflection**：对目标服务发起 reflection 请求自动拉取 descriptor（很多服务默认开启）。
+
+配套：
+- Method 解析：`:path` = `/package.Service/Method`，展示服务/方法名与 streaming 类型（unary / client / server / bidi）；
+- trailer 与状态：`grpc-status` / `grpc-message` / `grpc-encoding`（含 trailer-only 响应）、`grpc-timeout`；
+- 与 #14 联动：server-streaming 走流式透传 + 逐条 message 展示；
+- 与 #11 复用：同一个解码器给 WebSocket 二进制帧使用。
+
+### 子任务
+
+- [ ] `internal/grpc`：帧拆分 + wire-format 递归解码 + 单测（含压缩标志、跨块帧）
+- [ ] Method/状态/trailer 解析（含 HTTP/2 trailer 获取）
+- [ ] 详情页 "gRPC" 标签页（多 message、树形展示）
+- [ ] `.proto` 导入与 descriptor 编译 + 持久化
+- [ ] Reflection 客户端（超时与失败降级）
+- [ ] 流式联动（依赖 P1 流式改造）
+
+### 验收标准
+
+- 对任意 gRPC 服务导出接口：unary 与 server-streaming 都能逐条 message 展示，状态码/错误信息正确；
+- 导入 `.proto` 后字段名正确显示；
+- 未导入 proto 时退化为"字段号 + 值"的可读结构，不报错。
+
+**预估**：无 schema 解码 3–4 天；proto 导入 4–5 天；reflection 2 天。**依赖**：P1 的流式透传（server-streaming 场景）。
+
+---
+
+## 跨项公共依赖（先做能省重复工）
+
+1. **流式透传底座**（P1）：被 gRPC server-streaming、SSE、WebSocket 之外的长连接共用。
+2. **面向 AI/前端的查询层**（P1-MCP）：过滤 / 分页 / 字段裁剪，替换现在"一次返回全部 flow"的 `GetFlows`，前端大列表也同时受益。
+3. **二进制解码器**（P3-gRPC）：gRPC 与 WebSocket 二进制帧共用。
+4. **规则存储统一**（P1-SSE 自定义规则 与 现有 Rules/Map Local）：避免各写一套配置结构。
+
+## 后续候选（本轮不排期）
+
+侧栏 `Devices`（本地/远程设备）与 `Saved` 三个条目目前在 `filterFlows` 里没有对应分支，点击等于不筛选；`Favorites` 与 `Pinned` 语义重叠。属于"UI 已承诺、逻辑未实现"，建议在 P2 手机接入时一并收敛（设备维度正好需要它）。
