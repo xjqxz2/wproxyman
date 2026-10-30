@@ -60,8 +60,6 @@ func AppToolSpecs() []ToolSpec {
 		// ---- 流量（flows）----
 		{Name: "get_flow_count", Method: "GetFlowCount", Group: "flows", Tier: TierRead,
 			Description: "当前已捕获的流量条数。"},
-		{Name: "get_flows_raw", Method: "GetFlows", Group: "flows", Tier: TierRead,
-			Description: "返回**全部**流量（含正文），数据量大时非常耗上下文；优先使用后续的 list_flows。"},
 		{Name: "get_flow_raw", Method: "GetFlow", Group: "flows", Tier: TierRead, Params: []string{"id"},
 			Description: "按 id 返回单条流量（含完整正文）。正文很大时请改用 get_flow_body 分段读取。"},
 		{Name: "get_flows_by_domain", Method: "GetFlowsByDomain", Group: "flows", Tier: TierRead,
