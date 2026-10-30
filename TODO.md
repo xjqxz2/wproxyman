@@ -10,8 +10,8 @@
 | 优先级 | 项目 | 状态 | 预估 |
 |---|---|---|---|
 | P0 | 系统代理未恢复（关闭软件后断网） | `[x]` 已完成（v1.0.7） | 1 天 |
-| P1 | 流式转发 + SSE / LLM 视图（OpenAI / Anthropic / 非标） | `[ ]` | 6–8 天 |
-| P1 | MCP Server：让 AI 查询并控制抓包配置 | `[ ]` | 4–6 天 |
+| P1 | 流式转发 + SSE / LLM 视图（OpenAI / Anthropic / 非标） | `[x]` 已完成（v1.1.0） | 6–8 天 |
+| P1 | MCP Server：**通过 MCP 控制整个软件**（能力注册表 + 反射） | `[ ]` | 6–7 天 |
 | P1 | **文档：重写 README（重点：怎么用 + 有什么功能）** | `[x]` 已完成 | 1 天 |
 | P2 | 手机一键接入（二维码 / iOS 描述文件 / adb） | `[ ]` | 2 天 |
 | P2 | WebSocket 双向：手动发帧 / 重放 / 二进制解析 | `[ ]` | 2–3 天 |
@@ -155,56 +155,92 @@
 
 ---
 
-## P1 · MCP Server：让 AI 查询并控制抓包
+## P1 · MCP Server：让 AI 控制整个软件
 
-**目标**：`Claude / Cursor / 其它 MCP 客户端` 能读取抓到的流量、并按用户授权修改抓包配置（SSL 解密、Map Local、Block List、限速等）。
+> **需求变更（2026-10-30）**：原计划"先做只读工具"作废 —— 用户要求**通过 MCP 控制整个软件**，
+> 因此目标是把 App 的完整能力面（当前 44 个导出方法）暴露给 MCP 客户端。
 
-### 现状与证据
-
-- 仓库内无任何 MCP 相关代码；工具配置全部通过 `App` 结构体的 Wails 方法暴露（`app_tools.go` / `app_settings.go`），没有对外的本地 RPC 通道。
-- 现有查询接口粒度太粗：`GetFlows()` 一次返回**全部** flow（含 body），不适合给 AI 用（上下文爆炸）。
+**目标**：Claude / Cursor / 其他 MCP 客户端连上后，既能查询抓到的流量，也能像在界面上操作一样
+控制整个应用：代理启停与端口、系统代理、SSL 解密规则、13 个工具的配置、会话与导出、证书管理、
+Compose/Repeater、断点决策、流式解析规则……
 
 ### 设计要点
 
-**形态（两个入口，共用一套能力层）**
-1. **本地 HTTP MCP（首选）**：app 内在 `127.0.0.1:<随机端口>` 起一个 streamable-HTTP MCP 端点，UI 显示 URL + 一次性 token，客户端填 URL 即可用。
-2. **stdio 包装子命令 `wproxyman mcp`**（次选）：给 Claude Desktop 这类只支持 stdio 的客户端用，内部转发到上面的本地端点。
+**1) 不手写工具，用「能力注册表 + 反射」自动生成（关键决定）**
 
-**能力层（先只读，后写操作）**
+手写 44 个工具必然与代码漂移（加一个 App 方法就漏一个）。做法：
 
-| 类型 | 名称 | 说明 |
+- 用 `reflect` 遍历 `*App` 的导出方法，按注册表元数据生成 MCP 工具；
+- 注册表只维护**元数据**（描述、分组、权限档、参数改名），签名与 JSON Schema 从反射推导 ——
+  改了签名不会漂移；
+- 结构体参数（`Settings` / `Flow` / `EngineConfig`）按 `encoding/json` 标签递归生成
+  Schema（限深，允许 additionalProperties）；
+- 工具名用 snake_case（`set_ssl_proxy_enabled`），并保留一个 `list_capabilities`
+  方便客户端先问"你能做什么"。
+
+**2) 少数方法需要"AI 友好"的包装，不能直接暴露**
+
+| 原方法 | 问题 | 处理 |
 |---|---|---|
-| tool | `list_flows` | 过滤（host/method/status/时间/仅失败/仅流式）+ 分页 + 字段裁剪 |
-| tool | `get_flow` | 单条详情；body 可截断或按需分段取 |
-| tool | `search_flows` | 正文全文搜索 |
-| tool | `get_stats` | 域名 TOP / 慢请求 TOP / 状态码分布 / 流量体积 |
-| resource | `flows://recent` / `rules://current` | 只读资源 |
-| prompt | `explain_flow` / `draft_rule` | 提示模板，引导 AI 输出解释或规则草案 |
-| tool（写） | `set_ssl_proxy`、`add_map_local`、`add_map_remote`、`add_block_rule`、`set_network_condition`、`clear_flows`、`start_proxy` / `stop_proxy`、`set_upstream_proxy` | 修改抓包配置 |
+| `GetFlows()` | 一次返回全部 flow（含正文）→ 上下文爆炸 | 换成 `list_flows`：过滤（host/method/status/时间/仅失败/仅流式）+ 分页 + 字段裁剪 |
+| `GetFlow(id)` | 正文可能几十 MB | `get_flow` 支持 `bodyLimit`，超限给摘要 + 提示用 `get_flow_body` 分段取 |
+| `GetCACertPEM()` | 一大段 PEM，对模型无意义 | 不暴露为工具，改为资源 `cert://ca` |
+| `GetRequestBody` / `GetResponseBody` | base64 大块 | 包装成带 `offset/limit` 的 `get_flow_body` |
+| `Cleanup()` | 生命周期内部方法 | **不暴露** |
 
-**安全（必须做，不能省）**
-- 只监听 `127.0.0.1`；token 每次启动随机生成，可在 UI 一键吊销；
-- **写操作默认关闭**，需要用户在设置里显式打开「允许 AI 修改配置」；开启后 UI 常驻提示；
-- 审计日志：每次写操作记录"时间 / 工具名 / 参数 / 结果"，可在设置里查看；
-- 破坏性操作（`clear_flows`、`stop_proxy`）要求 MCP 客户端二次确认（工具层返回 `requires_confirmation`）。
+**3) 权限分档（默认最小权限）**
+
+| 档位 | 例子 | 默认 |
+|---|---|---|
+| `read` | list/get/search flows、get_stats、get_settings、get_tool_config、get_proxy_port | ✅ 开 |
+| `write` | set_settings、set_ssl_proxy_enabled、apply_tool_config、start/stop_proxy、set_flow_pinned、resolve_breakpoint、send_request | ❌ 需显式开启 |
+| `dangerous` | clear_flows、install/remove_certificate、set_upstream_insecure（关掉上游证书校验）、所有落盘/读文件方法（SaveSession/OpenSession/ExportHAR/ImportHAR/SaveFlowContent 等，路径任意） | ❌ 需显式开启 + 每次调用写入审计 |
+
+- 只监听 `127.0.0.1`；token 随机生成、可在 UI 一键吊销/轮换；
+- **审计日志**：时间 / 工具名 / 参数摘要 / 档位 / 结果，UI 可查，环形缓冲（上限 500 条）；
+- 破坏性操作在返回里标注 `requires_confirmation`，避免模型"顺手清空"。
+
+**4) 协议版本：必须做 dual-era（重要，已核对官方规范）**
+
+MCP 在 `2026-07-28` 修订版改成了**无握手**：没有 `initialize` 会话，每个请求自带
+`_meta.protocolVersion`（HTTP 上还有 `MCP-Protocol-Version` 头），版本不支持要回
+`-32022 UnsupportedProtocolVersionError` 并带上 `data.supported` 列表；服务端**必须**实现
+`server/discover`。`2025-11-25` 及更早是"legacy"代（`initialize` 握手 + 会话）。
+
+结论：本实现做成 **dual-era** —— 带 `_meta` 的请求按现代语义无状态处理；收到 `initialize`
+则按 legacy 语义服务该会话，两种客户端都能用。（来源：modelcontextprotocol.io 的
+versioning 与 transports 规范。）
+
+**5) 传输**
+
+1. **内置本地 HTTP MCP（首选）**：app 内起 `127.0.0.1:<端口>`，`POST /mcp` 实现
+   JSON-RPC 2.0（`initialize` / `tools/list` / `tools/call` / `resources/list` /
+   `resources/read` / `prompts/list`），支持 `Mcp-Session-Id`；UI 显示 URL + token，
+   客户端填 URL 即可用。
+2. **stdio 桥（第二个入口）**：`wproxyman mcp` 子命令，把 stdio 上的 JSON-RPC 转发到上面
+   的本地端点 —— 兼容 Claude Desktop 这类只支持 stdio 的客户端；app 没在跑时给出明确提示。
 
 ### 子任务
 
-- [ ] 后端：为 AI 优化的查询层（过滤/分页/字段裁剪/正文截断），并让前端复用同一实现（替换现在"全量返回"的 `GetFlows`）
-- [ ] 后端：MCP 协议实现（JSON-RPC 2.0 + `initialize` / `tools/list` / `tools/call` / `resources/*` / `prompts/*`）
-- [ ] 后端：本地 HTTP 端点 + token 鉴权 + 写操作开关 + 审计日志
-- [ ] 前端：设置面板新增 "MCP" 区块（开关、URL、token 复制/重置、允许写操作、审计日志）
+- [ ] 后端：`internal/mcp` 协议层（JSON-RPC 2.0 编解码、错误码、**现代 `_meta` 版本校验 + `server/discover` + legacy `initialize` 兼容**、会话 id）
+- [ ] 后端：能力注册表 + 反射 Schema 生成 + 调用分发（含权限档校验）
+- [ ] 后端：AI 友好包装（`list_flows` / `get_flow` / `get_flow_body` / `search_flows` / `get_stats` / `list_capabilities`）
+- [ ] 后端：本地 HTTP 端点 + Bearer token + 审计日志（环形缓冲）
+- [ ] 后端：查询层重构（过滤/分页/字段裁剪），供 MCP 与前端共用（替换"一次返回全部"）
+- [ ] 前端：设置面板新增 MCP 区块（开关、URL/token 复制与轮换、写/危险档开关、审计日志、接入片段）
 - [ ] `main.go`：`wproxyman mcp` stdio 子命令
-- [ ] 文档：README 增加接入 Claude / Cursor 的图文步骤
-- [ ] 测试：协议层单测（tools/list、鉴权失败、写操作关闭时的拒绝、审计落库）
+- [ ] 测试：握手、tools/list、Schema 生成、分发、鉴权失败、写/危险档拒绝、审计落库、
+      `cleanup` 等内部方法**不在**工具列表里
+- [ ] 文档：README 增加"用 AI 控制 WProxyman"章节（Claude / Cursor 配置步骤）
 
 ### 验收标准
 
-- 在 Claude/Cursor 里配置该 MCP 后，可以问"刚才那个 500 的请求是什么原因"，AI 通过 `list_flows` + `get_flow` 给出答案；
-- 未开启写操作时，任何写工具调用被拒并给出明确原因；
-- 开启写操作后，AI 能新增一条 Map Local 规则，且 UI 立即反映；审计日志有记录。
+- Claude/Cursor 配置后能问"刚才那个 500 的请求什么原因"，AI 通过 `list_flows` + `get_flow` 回答；
+- 未开写档时任何写操作被拒且给出可操作提示；开启后 AI 能新增一条 Map Local 规则且 UI 立即反映；
+- AI 能完成"改端口 → 重启代理 → 验证系统代理指向新端口"的完整操作链；
+- 审计日志能看到每一次调用；`list_capabilities` 与 App 的导出方法集合一致（有测试守着）。
 
-**预估**：只读 2–3 天；写操作 + 安全审计 2 天；stdio 包装 1 天。**依赖**：查询层重构（同时让前端受益）。
+**预估**：协议层 + 注册表 2 天；包装与查询层重构 1.5 天；UI + 审计 1 天；stdio 桥 0.5 天；测试与文档 1 天。
 
 ---
 
