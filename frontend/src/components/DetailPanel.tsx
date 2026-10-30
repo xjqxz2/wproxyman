@@ -13,7 +13,7 @@
 //   - @monaco-editor/react：惰性加载的代码编辑器（用于断点编辑，离线可降级为 <pre>）。
 
 import { Component, lazy, Suspense, useMemo, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { loader } from '@monaco-editor/react';
 import type { EditorProps, Monaco } from '@monaco-editor/react';
 import { useI18n } from '../i18n';
@@ -21,6 +21,7 @@ import { ArrowDown, ArrowUp, Copy, Download, Plus, Send, Terminal, Trash2 } from
 import { useApp, useFlows } from '../store';
 import { api } from '../services/api';
 import type { Flow, Header } from '../types';
+import { accumulateStream, providerLabelKey } from '../stream/parsers';
 import {
   bodyToText,
   decodeBody,
@@ -418,6 +419,264 @@ function MessageView({ flow, side }: { flow: Flow; side: 'request' | 'response' 
   );
 }
 
+// --- Stream 页共用的小样式与工具 ---
+
+const mono: CSSProperties = { fontFamily: 'var(--font-mono)', fontSize: 11.5 };
+
+// preBlock — 等宽正文块（累积文本 / 原始正文 / 工具参数）。
+const preBlock: CSSProperties = {
+  margin: 0,
+  padding: '8px 10px',
+  background: 'var(--bg-input)',
+  border: '1px solid var(--border)',
+  borderRadius: 6,
+  fontFamily: 'var(--font-mono)',
+  fontSize: 12,
+  color: 'var(--text-primary)',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+  maxHeight: 360,
+  overflow: 'auto',
+};
+
+// prettyArgs 把 tool_calls / tool_use 的 JSON 参数字符串格式化展示。
+// 流式协议里参数是分片下发的，可能尚未拼成合法 JSON —— 此时原样显示。
+function prettyArgs(args: string): string {
+  if (!args) return '';
+  try {
+    return JSON.stringify(JSON.parse(args), null, 2);
+  } catch {
+    return args;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Stream 标签页（SSE / NDJSON / LLM 流式响应）
+// ---------------------------------------------------------------------------
+
+// StreamTab — 流式响应视图，三个子视图：
+//   timeline    每条事件的时间偏移、间隔、大小、event 名与内容预览；
+//   accumulated 把增量碎片拼成"完整回复"（OpenAI / Anthropic 预设解析，
+//               非标协议走用户自定义 JSONPath 规则）；
+//   raw         原始正文（受后端 MaxBodyBytes 限制，超限只影响保存）。
+function StreamTab({ flow }: { flow: Flow }) {
+  const { t } = useI18n();
+  const rules = useApp((s) => s.settings?.streamRules ?? []);
+  const events = flow.sseMessages ?? [];
+  const acc = useMemo(() => accumulateStream(events, rules), [events, rules]);
+  const [view, setView] = useState<'timeline' | 'accumulated' | 'raw'>('timeline');
+  const [hideHeartbeats, setHideHeartbeats] = useState(true);
+
+  const shown = hideHeartbeats ? events.filter((e) => !e.comment) : events;
+  const heartbeats = events.filter((e) => !!e.comment).length;
+  const lastAt = events.length ? events[events.length - 1].atMs : 0;
+  // TTFB：从请求到达代理到上游首字节返回。流式接口最直观的"卡不卡"指标。
+  const ttfb = flow.firstByteAt && flow.startedAt ? Math.max(0, flow.firstByteAt - flow.startedAt) : undefined;
+  const rate = lastAt > 0 ? (events.length * 1000) / lastAt : undefined;
+  const rawText = useMemo(() => bodyToText(flow.responseBody), [flow.responseBody]);
+
+  const num = (v: number | undefined, digits = 0) => (v === undefined ? '—' : v.toFixed(digits));
+  const chip: CSSProperties = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    fontSize: 11.5,
+    color: 'var(--text-secondary)',
+  };
+  const chipKey: CSSProperties = { color: 'var(--text-tertiary)' };
+
+  const viewBtn = (id: 'timeline' | 'accumulated' | 'raw', label: string) => (
+    <button
+      type="button"
+      className={`btn${view === id ? ' primary' : ''}`}
+      style={{ fontSize: 11.5, padding: '2px 10px' }}
+      onClick={() => setView(id)}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+      {/* 概览：协议、事件数、时长、TTFB、速率 */}
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 14,
+          padding: '8px 12px',
+          borderBottom: '1px solid var(--border)',
+          alignItems: 'center',
+        }}
+      >
+        <span className={flow.streamKind === 'ndjson' ? 'tag blue' : 'tag green'}>
+          {flow.streamKind === 'ndjson' ? 'NDJSON' : 'SSE'}
+        </span>
+        <span style={chip}>
+          <span style={chipKey}>{t('stream.events')}</span>
+          {events.length}
+        </span>
+        <span style={chip}>
+          <span style={chipKey}>{t('stream.duration')}</span>
+          {num(lastAt)} ms
+        </span>
+        <span style={chip}>
+          <span style={chipKey}>TTFB</span>
+          {ttfb === undefined ? '—' : `${ttfb} ms`}
+        </span>
+        <span style={chip}>
+          <span style={chipKey}>{t('stream.rate')}</span>
+          {rate === undefined ? '—' : `${rate.toFixed(1)} /s`}
+        </span>
+        <span style={chip}>
+          <span style={chipKey}>{t('stream.provider')}</span>
+          {t(providerLabelKey(acc))}
+          {acc.provider === 'custom' && acc.ruleName ? `：${acc.ruleName}` : ''}
+        </span>
+        <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+          {viewBtn('timeline', t('stream.viewTimeline'))}
+          {viewBtn('accumulated', t('stream.viewAccumulated'))}
+          {viewBtn('raw', t('stream.viewRaw'))}
+        </span>
+      </div>
+
+      {/* 提示：跳过响应工具 / 触达上限 / 解析说明 */}
+      <div style={{ padding: '6px 12px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ ...chip, color: 'var(--warn)' }}>{t('stream.toolsSkipped')}</div>
+        {flow.streamTruncated && <div style={{ ...chip, color: 'var(--warn)' }}>{t('stream.eventsTruncated')}</div>}
+        {flow.responseTruncated && <div style={{ ...chip, color: 'var(--warn)' }}>{t('stream.bodyTruncated')}</div>}
+        {acc.notes.map((n, i) => (
+          <div key={i} style={chip}>
+            {t(n.key, { name: n.name ?? '' })}
+          </div>
+        ))}
+      </div>
+
+      {view === 'timeline' && (
+        <>
+          <div style={{ padding: '4px 12px 8px' }}>
+            <label style={{ ...chip, cursor: 'pointer' }}>
+              <input type="checkbox" checked={hideHeartbeats} onChange={(e) => setHideHeartbeats(e.target.checked)} />
+              {t('stream.hideHeartbeats')}
+              {heartbeats > 0 ? ` (${heartbeats})` : ''}
+            </label>
+          </div>
+          <div className="detail-content" style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+            {shown.length === 0 ? (
+              <div className="body-empty">{t('stream.noEvents')}</div>
+            ) : (
+              shown.map((m, i) => {
+                const prev = i > 0 ? shown[i - 1].atMs : 0;
+                const delta = m.atMs - prev;
+                const preview = m.comment ? `: ${m.comment}` : m.data.replace(/\s+/g, ' ').slice(0, 200);
+                return (
+                  <div
+                    key={m.seq}
+                    style={{
+                      display: 'flex',
+                      gap: 10,
+                      padding: '4px 12px',
+                      borderBottom: '1px solid rgba(53, 54, 60, 0.4)',
+                      alignItems: 'baseline',
+                    }}
+                  >
+                    <span style={{ ...mono, width: 42, textAlign: 'right', color: 'var(--text-tertiary)' }}>#{m.seq}</span>
+                    <span style={{ ...mono, width: 64, textAlign: 'right', color: 'var(--text-secondary)' }}>+{m.atMs}ms</span>
+                    <span style={{ ...mono, width: 56, textAlign: 'right', color: 'var(--text-tertiary)' }}>
+                      {i === 0 ? '—' : `Δ${delta}ms`}
+                    </span>
+                    <span className={`tag ${m.comment ? 'amber' : 'blue'}`} style={{ flexShrink: 0 }}>
+                      {m.comment ? t('stream.heartbeat') : m.event || 'message'}
+                    </span>
+                    <span style={{ ...mono, width: 56, textAlign: 'right', color: 'var(--text-tertiary)' }}>{m.size}B</span>
+                    <span
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 12,
+                        color: 'var(--text-primary)',
+                        whiteSpace: 'nowrap',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                      }}
+                    >
+                      {preview}
+                    </span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </>
+      )}
+
+      {view === 'accumulated' && (
+        <div className="detail-content" style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 12 }}>
+          {(acc.model || acc.usage || acc.finishReason || acc.stopReason) && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, marginBottom: 10 }}>
+              {acc.model && (
+                <span style={chip}>
+                  <span style={chipKey}>model</span>
+                  {acc.model}
+                </span>
+              )}
+              {acc.usage?.inputTokens !== undefined && (
+                <span style={chip}>
+                  <span style={chipKey}>{t('stream.usageIn')}</span>
+                  {acc.usage.inputTokens}
+                </span>
+              )}
+              {acc.usage?.outputTokens !== undefined && (
+                <span style={chip}>
+                  <span style={chipKey}>{t('stream.usageOut')}</span>
+                  {acc.usage.outputTokens}
+                </span>
+              )}
+              {(acc.finishReason || acc.stopReason) && (
+                <span style={chip}>
+                  <span style={chipKey}>{t('stream.finishReason')}</span>
+                  {acc.finishReason || acc.stopReason}
+                </span>
+              )}
+            </div>
+          )}
+
+          {acc.reasoning && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ ...chip, marginBottom: 4 }}>{t('stream.reasoning')}</div>
+              <pre style={preBlock}>{acc.reasoning}</pre>
+            </div>
+          )}
+
+          <div style={{ ...chip, marginBottom: 4 }}>{t('stream.text')}</div>
+          <pre style={preBlock}>{acc.text || t('stream.noText')}</pre>
+
+          {acc.toolCalls.length > 0 && (
+            <div style={{ marginTop: 12 }}>
+              <div style={{ ...chip, marginBottom: 4 }}>{t('stream.toolCalls')}</div>
+              {acc.toolCalls.map((c, i) => (
+                <div key={i} style={{ marginBottom: 8 }}>
+                  <div style={{ ...mono, color: 'var(--text-secondary)' }}>
+                    {c.name || 'tool'} {c.id ? `· ${c.id}` : ''}
+                  </div>
+                  <pre style={preBlock}>{prettyArgs(c.args)}</pre>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {view === 'raw' && (
+        <div className="detail-content" style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 12 }}>
+          <pre style={preBlock}>{rawText || t('stream.noBody')}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // WebSocket 标签页
 // ---------------------------------------------------------------------------
@@ -610,7 +869,7 @@ function BreakpointModal({ flow, side }: { flow: Flow; side: 'request' | 'respon
 
 // Tab — 详情面板顶层标签类型：overview（概览）| request（请求）|
 // response（响应）| websocket（WebSocket）。
-type Tab = 'overview' | 'request' | 'response' | 'websocket';
+type Tab = 'overview' | 'request' | 'response' | 'websocket' | 'stream';
 
 // TabBtn — 顶层标签按钮：label（文案）、active（是否高亮）、onClick（点击回调）。
 function TabBtn({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
@@ -634,7 +893,10 @@ export default function DetailPanel() {
 
   // 当前标签页；若当前选中非 WebSocket 流量却停留在 websocket 标签，则回退到 overview。
   const [tab, setTab] = useState<Tab>('overview');
-  const activeTab: Tab = tab === 'websocket' && flow && !flow.isWebSocket ? 'overview' : tab;
+  const activeTab: Tab =
+    (tab === 'websocket' && flow && !flow.isWebSocket) || (tab === 'stream' && flow && !flow.isStream)
+      ? 'overview'
+      : tab;
 
   // 断点侧：仅当选中流量处于待处理断点且当前标签为 request/response 时，
   // 返回对应 side 以决定弹出编辑模态框；否则为 null（不弹框）。
@@ -667,6 +929,7 @@ export default function DetailPanel() {
             <TabBtn label={t('detail.request')} active={activeTab === 'request'} onClick={() => setTab('request')} />
             <TabBtn label={t('detail.response')} active={activeTab === 'response'} onClick={() => setTab('response')} />
             {flow.isWebSocket && <TabBtn label={t('detail.websocket')} active={activeTab === 'websocket'} onClick={() => setTab('websocket')} />}
+            {flow.isStream && <TabBtn label={t('detail.stream')} active={activeTab === 'stream'} onClick={() => setTab('stream')} />}
           </div>
 
           {/* 按当前标签渲染对应内容区。 */}
@@ -675,6 +938,7 @@ export default function DetailPanel() {
             {activeTab === 'request' && <MessageView flow={flow} side="request" />}
             {activeTab === 'response' && <MessageView flow={flow} side="response" />}
             {activeTab === 'websocket' && <WebSocketTab flow={flow} />}
+            {activeTab === 'stream' && <StreamTab flow={flow} />}
           </div>
         </>
       ) : (

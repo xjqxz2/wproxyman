@@ -46,6 +46,25 @@ type SSEMessage struct {
 	Size    int    `json:"size"`              // 该帧原始字节数（含分隔空行）
 }
 
+// StreamRule 描述如何把**非标**流式协议还原成可读文本。
+//
+// OpenAI / Anthropic 这类主流协议由前端内置预设解析；私有协议（自研后端、
+// 网关包装、公司内部字段）靠用户在设置里加一条规则：给出"增量文本所在的
+// JSON 路径"，即可把碎片拼成完整的累积内容。
+//
+// 路径使用 JSONPath 的常用子集：$.a.b[0].c（点号 + 下标 + 引号键）。
+type StreamRule struct {
+	Name string `json:"name"` // 规则名（界面显示，如"内部网关"）
+	// MatchPath 存在时，仅当事件 data 里能取到该路径才应用本规则，
+	// 用来把规则限定在特定协议上（留空表示总是应用）。
+	MatchPath string `json:"matchPath,omitempty"`
+	// DeltaPath 是增量文本路径，例如 $.choices[0].delta.content；取到的值
+	// 会按顺序拼接成累积文本。
+	DeltaPath string `json:"deltaPath"`
+	// StopValue 匹配到该 data 值时停止累积（如 OpenAI 的 [DONE]）。
+	StopValue string `json:"stopValue,omitempty"`
+}
+
 // MarshalBody 将字节体编码为 base64 字符串，用于 JSON 传输。
 func MarshalBody(b []byte) string {
 	if len(b) == 0 {

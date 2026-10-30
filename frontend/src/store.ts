@@ -5,7 +5,7 @@
 // 交互模块：App.tsx 负责初始化与事件推送写入；各组件通过 hook 读取/更新状态；
 // filterFlows 供列表类组件做统一的筛选计算。
 import { create } from 'zustand';
-import type { EngineConfig, Flow, ProxyStatus, Settings } from './types';
+import type { EngineConfig, Flow, ProxyStatus, Settings, SSEMessage } from './types';
 
 // FlowsState — 流量切片的状态接口。
 // 字段：flows（全部流量）、selectedId（当前选中流量 id）、searchQuery（搜索关键字）、
@@ -22,6 +22,12 @@ interface FlowsState {
   showOnlyFailed: boolean;
 
   setFlows: (flows: Flow[]) => void;
+  // 追加流式响应（SSE / NDJSON）的增量事件。
+  appendStream: (
+    id: string,
+    msgs: SSEMessage[],
+    meta: { size?: number; firstByteAt?: number; kind?: string; truncated?: boolean },
+  ) => void;
   upsertFlow: (f: Flow) => void;
   removeFlow: (id: string) => void;
   clear: () => void;
@@ -44,6 +50,24 @@ export const useFlows = create<FlowsState>((set, get) => ({
 
   // 整体替换流量列表。
   setFlows: (flows) => set({ flows }),
+  // 追加流式事件：流式响应期间高频调用，只替换命中的那一条 flow 对象。
+  appendStream: (id, msgs, meta) => {
+    const { flows } = get();
+    const idx = flows.findIndex((f) => f.id === id);
+    if (idx < 0) return;
+    const cur = flows[idx];
+    const next = [...flows];
+    next[idx] = {
+      ...cur,
+      isStream: true,
+      streamKind: (meta.kind as Flow['streamKind']) ?? cur.streamKind,
+      firstByteAt: meta.firstByteAt ?? cur.firstByteAt,
+      responseSize: meta.size ?? cur.responseSize,
+      streamTruncated: meta.truncated ?? cur.streamTruncated,
+      sseMessages: msgs.length ? [...(cur.sseMessages ?? []), ...msgs] : cur.sseMessages,
+    };
+    set({ flows: next });
+  },
   // 插入或更新单条流量：已存在（按 id）则原位替换，否则追加到末尾。
   upsertFlow: (f) => {
     const { flows } = get();

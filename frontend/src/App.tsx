@@ -10,7 +10,7 @@
 import { useEffect, useState } from 'react';
 import { useFlows, useApp } from './store';
 import { api, emit, Events, onEvent } from './services/api';
-import type { Flow, ProxyStatus } from './types';
+import type { Flow, ProxyStatus, SSEMessage } from './types';
 import Toolbar from './components/Toolbar';
 import SourceList from './components/SourceList';
 import FlowTable from './components/FlowTable';
@@ -24,7 +24,7 @@ import './styles/theme.css';
 // 返回值：完整的应用界面结构（无 props、无对外暴露的状态）。
 export default function App() {
   // 从全局 store 中取出流量操作与各类应用状态 setter。
-  const { setFlows, upsertFlow, removeFlow, clear } = useFlows();
+  const { setFlows, upsertFlow, removeFlow, clear, appendStream } = useFlows();
   const { setProxy, setSSL, setCertInstalled, setToolConfig, setSettings, addPendingBreakpoint, removePendingBreakpoint, activeView, settingsOpen, setSettingsOpen } = useApp();
   // ready — 标记初始数据是否已加载完成（目前用于保证事件订阅前数据就绪）。
   const [ready, setReady] = useState(false);
@@ -84,6 +84,23 @@ export default function App() {
       onEvent<Flow[]>(Events.FlowsReplaced, (flows) => setFlows(flows)),
       // 导入流量后，直接从 store 当前状态重新设置列表。
       onEvent<Flow[]>(Events.FlowsImported, () => setFlows(useFlows.getState().flows)),
+      // 流式响应（SSE / NDJSON）的增量事件：只携带新解析出的事件，
+      // 由 store 追加到对应 flow（整条 flow 的正文不在这里重推）。
+      onEvent<{
+        id: string;
+        messages?: SSEMessage[];
+        size?: number;
+        firstByteAt?: number;
+        streamKind?: string;
+        truncated?: boolean;
+      }>(Events.StreamMessage, (p) =>
+        appendStream(p.id, p.messages ?? [], {
+          size: p.size,
+          firstByteAt: p.firstByteAt,
+          kind: p.streamKind,
+          truncated: p.truncated,
+        }),
+      ),
       // 代理运行状态（端口/系统代理开关）变更。
       onEvent<ProxyStatus>(Events.ProxyStatus, (p) => setProxy(p)),
       // 证书安装状态变更。

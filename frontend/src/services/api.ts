@@ -28,6 +28,7 @@ export const Events = {
   FlowsCleared: 'flows:cleared',
   FlowsReplaced: 'flows:replaced',
   FlowsImported: 'flows:imported',
+  StreamMessage: 'flow:stream',
   ProxyStatus: 'proxy:status',
   CertStatus: 'cert:status',
   AppReady: 'app:ready',

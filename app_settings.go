@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"wproxyman/internal/models"
 	"wproxyman/internal/tools"
 )
 
@@ -58,6 +59,10 @@ type Settings struct {
 	// 退出/停止/崩溃自愈时靠它判断"这个系统代理是不是我们设的"——
 	// 不能依赖 Manager.Current()，因为部分平台读不到当前值（见 systemproxy 包说明）。
 	SystemProxyTarget string `json:"systemProxyTarget"`
+
+	// StreamRules 是用户为**非标**流式协议自定义的解析规则（SSE/NDJSON）。
+	// OpenAI / Anthropic 由前端内置预设处理，这里只放私有协议的补充规则。
+	StreamRules []models.StreamRule `json:"streamRules,omitempty"`
 }
 
 func settingsPath() string {
@@ -139,6 +144,7 @@ func (a *App) SetSettings(s Settings) error {
 	a.settings.Theme = s.Theme
 	a.settings.AllowLAN = s.AllowLAN
 	a.settings.ProxyPort = s.ProxyPort
+	a.settings.StreamRules = s.StreamRules
 	if s.MaxBodyBytes > 0 {
 		a.settings.MaxBodyBytes = s.MaxBodyBytes
 	}

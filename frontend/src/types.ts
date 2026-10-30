@@ -80,11 +80,39 @@ export interface Flow {
   webSocketClosed?: boolean;
   webSocketMessages?: WSMessage[];
 
+  // ---- 流式响应信息（SSE / NDJSON）----
+  isStream?: boolean;
+  streamKind?: 'sse' | 'ndjson';
+  streamEnded?: boolean;
+  firstByteAt?: number; // 上游首字节时间（unix 毫秒），用于算 TTFB
+  sseMessages?: SSEMessage[]; // 已解析的事件（受后端 MaxStreamEvents 上限约束）
+  streamTruncated?: boolean; // 事件记录是否已达上限
+
   // ---- 附加标记 ----
   error?: string; // 请求出错时的错误信息
   toolType?: string; // 命中工具类型（如断点/脚本等）
   isPinned?: boolean; // 是否被置顶（固定）
   isSaved?: boolean; // 是否已保存
+}
+
+// SSEMessage — 流式响应里的一条事件（与后端 models.SSEMessage 对应）。
+export interface SSEMessage {
+  seq: number; // 从 1 开始的序号
+  event?: string; // event: 字段（缺省为 message）
+  data: string; // data 拼接结果（多行以 \n 连接）
+  id?: string;
+  retry?: number;
+  comment?: string; // 注释行（心跳）；这类帧没有 data
+  atMs: number; // 相对流开始的毫秒偏移
+  size: number; // 该帧原始字节数
+}
+
+// StreamRule — 非标流式协议的自定义解析规则（JSONPath 子集）。
+export interface StreamRule {
+  name: string;
+  matchPath?: string;
+  deltaPath: string;
+  stopValue?: string;
 }
 
 // ============ 工具（Tools）配置类型（镜像 internal/tools）============
@@ -196,6 +224,7 @@ export interface Settings {
   theme: string; // 界面主题
   maxBodyBytes: number; // 请求/响应体捕获大小上限（字节）
   toolConfig?: EngineConfig; // 工具引擎配置
+  streamRules?: StreamRule[]; // 非标流式协议的自定义解析规则
 }
 
 // ProxyStatus — 代理运行状态（是否运行、监听端口、系统代理开关、最近一次启动失败原因）。

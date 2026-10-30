@@ -4,11 +4,11 @@
 //   - services/api锛氫唬鐞?璇佷功/璁剧疆/浼氳瘽鐩稿叧鍏ㄩ儴鍚庣鏂规硶。//   - 璇存槑：竷灞€鏍峰紡鍏ㄩ儴澶嶇敤 theme.css 鐨?CSS 鍙橀噺锛堟棤纭紪鐮侀鑹诧級銆
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { X, ShieldCheck, ShieldAlert, Download, Upload, Save, FolderOpen, MonitorSmartphone, Globe } from 'lucide-react';
+import { X, ShieldCheck, ShieldAlert, Download, Upload, Save, FolderOpen, MonitorSmartphone, Globe, Trash2 } from 'lucide-react';
 import { useApp } from '../store';
 import { api } from '../services/api';
 import { useI18n } from '../i18n';
-import type { ProxyStatus, Settings } from '../types';
+import type { ProxyStatus, Settings, StreamRule } from '../types';
 
 // MB —1 MiB 瀛楄妭鏁帮紙姝ｆ枃澶у皬涓婇檺鐨勬崲绠楀熀鍑嗭級銆
 const MB = 1048576;
@@ -91,6 +91,12 @@ const [certBusy, setCertBusy] = useState(false);
   // 姝ｆ枃澶у皬涓婇檺杈撳叆妗嗭紙MB 涓哄崟浣嶏級涓庝繚瀛樼粨鏋滄秷鎭€
 const [bodyInput, setBodyInput] = useState(() => String(Math.round((useApp.getState().settings?.maxBodyBytes ?? MB) / MB)));
   const [captureMsg, setCaptureMsg] = useState<OpMessage>(null);
+
+  // ---- 流式解析规则（非标 SSE / NDJSON）的状态 ----
+  // 本地编辑 + 手动保存：避免每敲一个字就写一次 settings.json。
+  const [rules, setRules] = useState<StreamRule[]>(() => useApp.getState().settings?.streamRules ?? []);
+  const [rulesDirty, setRulesDirty] = useState(false);
+  const [rulesMsg, setRulesMsg] = useState<OpMessage>(null);
 
   // ---- Devices 鍖哄潡鐨勬湰鍦扮姸鎬?----
   // 灞€鍩熺綉 IP 鍒楄〃涓庡姞杞借垂璐ユ彁绀恒€
@@ -386,6 +392,43 @@ const handleRemoveCert = async () => {
 
   // ---- Capture 鍖哄潡鎿嶄綔 ----
 
+  // --- 流式解析规则：增删改 + 保存 ---
+
+  const patchRule = (index: number, patch: Partial<StreamRule>) => {
+    setRules((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
+    setRulesDirty(true);
+    setRulesMsg(null);
+  };
+
+  const addRule = () => {
+    setRules((prev) => [...prev, { name: '', matchPath: '', deltaPath: '', stopValue: '' }]);
+    setRulesDirty(true);
+    setRulesMsg(null);
+  };
+
+  const removeRule = (index: number) => {
+    setRules((prev) => prev.filter((_, i) => i !== index));
+    setRulesDirty(true);
+    setRulesMsg(null);
+  };
+
+  const saveRules = async () => {
+    if (!settings) return;
+    // 丢弃没填增量路径的空规则（常见于"点了新增又没填"）。
+    const cleaned = rules.filter((r) => r.deltaPath.trim() !== '');
+    try {
+      const next: Settings = { ...settings, streamRules: cleaned };
+      await api.setSettings(next);
+      setSettings(next);
+      setRules(cleaned);
+      setRulesDirty(false);
+      setRulesMsg({ text: t('settings.rulesSaved'), ok: true });
+    } catch (err) {
+      console.error('Failed to save stream rules', err);
+      setRulesMsg({ text: `${t('settings.rulesSaveFailed')} ${String(err)}`, ok: false });
+    }
+  };
+
   // handleBodyBlur —姝ｆ枃澶у皬杈撳叆妗嗗け鐒︽椂淇濆瓨：  // 鏍￠獙鏁板€煎悎娉曟€э紝鏈彉鍖栧垯涓嶆彁浜わ紱淇濆瓨鎴愬姛鍚庢洿鏂?store 涓庢彁绀恒€
 const handleBodyBlur = async () => {
     const mb = Number(bodyInput);
@@ -667,6 +710,58 @@ if (e.target === e.currentTarget) onClose();
               <span style={{ color: 'var(--text-tertiary)' }}>{t('settings.mb')}</span>
             </div>
             {captureMsg && <div style={statusStyle(captureMsg.ok)}>{captureMsg.text}</div>}
+          </div>
+
+          {/* ===== 流式解析规则（非标 SSE / NDJSON）===== */}
+          <div className="tool-card">
+            <div className="tc-head">
+              <span className="tc-title">{t('settings.streamRules')}</span>
+            </div>
+            <div style={hintStyle}>{t('settings.streamRulesHint')}</div>
+            {rules.map((r, i) => (
+              <div key={i} style={{ ...rowStyle, gap: 6, marginTop: 6 }}>
+                <input
+                  className="input"
+                  style={{ width: 110 }}
+                  placeholder={t('settings.ruleName')}
+                  value={r.name}
+                  onChange={(e) => patchRule(i, { name: e.target.value })}
+                />
+                <input
+                  className="input"
+                  style={{ width: 150 }}
+                  placeholder={t('settings.ruleMatch')}
+                  value={r.matchPath ?? ''}
+                  onChange={(e) => patchRule(i, { matchPath: e.target.value })}
+                />
+                <input
+                  className="input"
+                  style={{ width: 190 }}
+                  placeholder="$.choices[0].delta.content"
+                  value={r.deltaPath}
+                  onChange={(e) => patchRule(i, { deltaPath: e.target.value })}
+                />
+                <input
+                  className="input"
+                  style={{ width: 80 }}
+                  placeholder="[DONE]"
+                  value={r.stopValue ?? ''}
+                  onChange={(e) => patchRule(i, { stopValue: e.target.value })}
+                />
+                <button type="button" className="btn" onClick={() => removeRule(i)} title={t('settings.remove')}>
+                  <Trash2 size={13} />
+                </button>
+              </div>
+            ))}
+            <div style={{ ...rowStyle, marginTop: 8 }}>
+              <button type="button" className="btn" onClick={addRule}>
+                {t('settings.addRule')}
+              </button>
+              <button type="button" className="btn primary" onClick={saveRules} disabled={!rulesDirty}>
+                {t('settings.saveRules')}
+              </button>
+              {rulesMsg && <span style={statusStyle(rulesMsg.ok)}>{rulesMsg.text}</span>}
+            </div>
           </div>
 
           {/* ===== Devices锛堣澶囷級鍖哄潡 ===== */}

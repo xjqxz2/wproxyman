@@ -136,6 +136,19 @@
 
 **预估**：后端流式改造 3–4 天；OpenAI/Anthropic 解析 3 天；自定义规则 + 导出 1–2 天。**依赖**：无（建议在 P1 先做，因为它是 #11 streaming 的前置）。
 
+### 进度（2026-10-30 起）
+
+- [x] `models`：`SSEMessage` + Flow 字段（`isStream` / `streamKind` / `streamEnded` / `firstByteAt` / `sseMessages` / `streamTruncated`）
+- [x] `internal/proxy`：流式透传（`http_forward.go` 的 `streamResponse`），读到即写 + Flush；`MaxBodyBytes` 只限制保存、不限制转发；RequestTimeout 拆成「等响应头」与「读正文」，流式不设总时长上限
+- [x] `internal/proxy/sse.go`：增量 SSE / NDJSON 解析器（CRLF/CR/LF、多行 data、注释心跳、id/retry、`[DONE]`、跨块 UTF-8、超长行防御）
+- [x] 事件推送：`Config.OnStream` → `flow:stream` 增量事件（按 16 条或 100ms 批量打包，不重推整条 flow）
+- [x] 测试：29 个用例（5 个端到端流式 + 24 个解析器），`go test ./...` 全绿 —— commit `293c535`
+- [ ] OpenAI 兼容预设解析器（`chat.completions` 与 `responses` API）
+- [ ] Anthropic 兼容预设解析器
+- [ ] 自定义 JSONPath 解析规则（存 settings.json，用户可编辑）
+- [ ] 前端 Stream 视图：时间线、原始/累积双视图、TTFB 与速率
+- [ ] 截图验证 + README 章节
+
 ---
 
 ## P1 · MCP Server：让 AI 查询并控制抓包
