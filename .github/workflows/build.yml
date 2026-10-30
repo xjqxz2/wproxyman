@@ -94,6 +94,18 @@ jobs:
           wails build -platform windows/arm64
           Move-Item build/bin/WProxyman.exe WProxyman_windows_arm64.exe -Force
 
+      # 两个架构都必须产出：缺任何一个都直接失败。
+      # （PowerShell 的 Move-Item 失败是"非终止错误"，不加这道校验的话
+      #  Release 会静默少一个产物 —— Windows ARM64 就这样丢了好几个版本。）
+      - name: Verify Windows binaries
+        if: matrix.isWindows == 'true'
+        shell: pwsh
+        run: |
+          foreach ($f in @('WProxyman_windows_amd64.exe', 'WProxyman_windows_arm64.exe')) {
+            if (-not (Test-Path $f)) { throw "missing build output: $f" }
+            Get-Item $f | Select-Object Name, Length
+          }
+
       # --- macOS：构建 .app，ad-hoc 签名后用 hdiutil 打成 dmg ---
       # 注意：ad-hoc 签名只能保证应用本地完整性；macOS Gatekeeper 仍会
       # 拦截未公证（notarized）的应用，首次打开请见 Release 说明。
@@ -113,17 +125,38 @@ jobs:
             "${{ matrix.asset }}"
           rm -rf "$DMG_STAGE"
 
-      - name: Upload artifact
+      # Windows 需要同时上传 amd64 与 arm64（后者是交叉编译产物）：
+      # Release 说明里列出了 Windows ARM64，之前只上传 matrix.asset（amd64），
+      # 导致 arm64 的 exe 编译完就被丢弃、Release 里根本找不到。
+      - name: Upload artifact (Windows)
+        if: matrix.isWindows == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: |
-            ${{ matrix.asset }}
+            WProxyman_windows_amd64.exe
+            WProxyman_windows_arm64.exe
+          if-no-files-found: error
+
+      - name: Upload artifact (macOS)
+        if: matrix.isWindows != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.asset }}
           if-no-files-found: error
 
       # 打 tag（v*）时：构建产物同时直接发布为正式 Release。
-      - name: Attach binaries to Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Attach binaries to Release (Windows)
+        if: startsWith(github.ref, 'refs/tags/') && matrix.isWindows == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            WProxyman_windows_amd64.exe
+            WProxyman_windows_arm64.exe
+
+      - name: Attach binaries to Release (macOS)
+        if: startsWith(github.ref, 'refs/tags/') && matrix.isWindows != 'true'
         uses: softprops/action-gh-release@v2
         with:
           files: |
