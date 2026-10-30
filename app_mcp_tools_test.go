@@ -161,3 +161,80 @@ func containsStr(s, sub string) bool {
 }
 
 var _ = mcp.TierRead
+
+// get_flow_body：正文必须能分段读，且二进制走 base64。
+func TestMCPGetFlowBodyTool(t *testing.T) {
+	app := NewApp()
+	app.flows = []*models.Flow{
+		{ID: "1", Method: "GET", Host: "a.com", Path: "/big", ResponseStatus: 200,
+			RequestBody: []byte("req-body"), RequestMimeType: "text/plain",
+			ResponseBody: []byte("0123456789"), ResponseMimeType: "text/plain"},
+		{ID: "2", Method: "GET", Host: "a.com", Path: "/bin", ResponseStatus: 200,
+			ResponseBody: []byte{0x00, 0xff, 0xfe}, ResponseTruncated: true},
+	}
+	for _, f := range app.flows {
+		app.flowIdx[f.ID] = f
+	}
+
+	reg, _, err := app.buildMCPRegistry()
+	if err != nil {
+		t.Fatalf("buildMCPRegistry: %v", err)
+	}
+	call := func(args string) map[string]any {
+		res, errObj := reg.Call("get_flow_body", json.RawMessage(args))
+		if errObj != nil {
+			t.Fatalf("get_flow_body(%s) 失败：%v", args, errObj)
+		}
+		raw, _ := json.Marshal(res)
+		var out map[string]any
+		_ = json.Unmarshal(raw, &out)
+		return out
+	}
+
+	// 默认整段文本。
+	out := call(`{"flowId":"1","side":"response"}`)
+	chunk := out["chunk"].(map[string]any)
+	if chunk["text"] != "0123456789" || chunk["total"].(float64) != 10 {
+		t.Fatalf("整段读取不对：%+v", chunk)
+	}
+	if out["hasMore"] != false || out["mimeType"] != "text/plain" {
+		t.Fatalf("元信息不对：%+v", out)
+	}
+
+	// 分片 + 续读：第二片接着第一片。
+	p1 := call(`{"flowId":"1","side":"response","offset":0,"limit":4}`)["chunk"].(map[string]any)
+	if p1["text"] != "0123" || p1["hasMore"] != true {
+		t.Fatalf("首片不对：%+v", p1)
+	}
+	p2 := call(`{"flowId":"1","side":"response","offset":4,"limit":4}`)["chunk"].(map[string]any)
+	if p2["text"] != "4567" {
+		t.Fatalf("续片不对：%+v", p2)
+	}
+
+	// 请求侧也能读。
+	req := call(`{"flowId":"1","side":"request"}`)
+	if req["chunk"].(map[string]any)["text"] != "req-body" {
+		t.Fatalf("请求正文读取不对：%+v", req)
+	}
+
+	// 二进制 → base64；截断标记透出。
+	bin := call(`{"flowId":"2","side":"response"}`)
+	bchunk := bin["chunk"].(map[string]any)
+	if bchunk["base64"] == nil || bchunk["text"] != nil {
+		t.Fatalf("二进制应回 base64：%+v", bchunk)
+	}
+	if bin["truncated"] != true {
+		t.Fatalf("截断标记应透出：%+v", bin)
+	}
+
+	// 参数校验：side 非法、flowId 不存在、缺 flowId。
+	if _, e := reg.Call("get_flow_body", json.RawMessage(`{"flowId":"1","side":"both"}`)); e == nil || e.Code != mcp.CodeInvalidParams {
+		t.Fatalf("非法 side 应被拒：%+v", e)
+	}
+	if _, e := reg.Call("get_flow_body", json.RawMessage(`{"flowId":"nope","side":"response"}`)); e == nil {
+		t.Fatalf("不存在的 flowId 应报错")
+	}
+	if _, e := reg.Call("get_flow_body", json.RawMessage(`{"side":"response"}`)); e == nil {
+		t.Fatalf("缺 flowId 应报错")
+	}
+}

@@ -8,6 +8,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 
 	"wproxyman/internal/flowquery"
 	"wproxyman/internal/mcp"
@@ -80,6 +81,28 @@ func (a *App) buildMCPRegistry() (*mcp.Registry, []string, error) {
 		return nil, warns, err
 	}
 
+	if err := reg.AddHandler(
+		mcp.ToolSpec{
+			Name:   "get_flow_body",
+			Method: "get_flow_body",
+			Group:  "flows",
+			Tier:   mcp.TierRead,
+			Description: "按需分段读取一条流量的请求或响应正文（默认 32 KiB，最多 256 KiB）。" +
+				"文本直接给 text；二进制给 base64。返回 hasMore 表示可带更大的 offset 继续读；" +
+				"truncated 表示这段正文在保存时已被正文上限截断（读到结尾也不代表拿到全部）。",
+		},
+		[]mcp.Param{
+			{Name: "flowId", Type: "string", Description: "流量 id（取自 list_flows）", Required: true},
+			{Name: "side", Type: "string", Description: "读哪一侧", Required: true, Enum: []string{"request", "response"}},
+			{Name: "offset", Type: "integer", Description: "起始字节偏移（翻页用）", Default: 0},
+			{Name: "limit", Type: "integer", Description: "本次读取字节数，默认 32768，最大 262144",
+				Default: flowquery.DefaultBodyLimit},
+		},
+		func(args json.RawMessage) (any, *mcp.Error) { return a.mcpGetFlowBody(args) },
+	); err != nil {
+		return nil, warns, err
+	}
+
 	return reg, warns, nil
 }
 
@@ -132,4 +155,57 @@ func (a *App) mcpListFlows(args json.RawMessage) (any, *mcp.Error) {
 		SinceMs:    in.SinceMs,
 		UntilMs:    in.UntilMs,
 	}, flowquery.Page{Limit: in.Limit, Offset: in.Offset}, in.Fields), nil
+}
+
+// getFlowBodyArgs 是 get_flow_body 的入参。
+type getFlowBodyArgs struct {
+	FlowID string `json:"flowId"`
+	Side   string `json:"side"`
+	Offset int    `json:"offset"`
+	Limit  int    `json:"limit"`
+}
+
+// mcpGetFlowBody 返回正文的一个分片。
+func (a *App) mcpGetFlowBody(args json.RawMessage) (any, *mcp.Error) {
+	var in getFlowBodyArgs
+	if err := json.Unmarshal(args, &in); err != nil {
+		return nil, mcp.Errorf(mcp.CodeInvalidParams, "参数解析失败：%v", err)
+	}
+	if in.FlowID == "" {
+		return nil, mcp.Errorf(mcp.CodeInvalidParams, "缺少参数 flowId")
+	}
+	side := strings.ToLower(strings.TrimSpace(in.Side))
+	if side != "request" && side != "response" {
+		return nil, mcp.Errorf(mcp.CodeInvalidParams, "side 只能是 request 或 response，收到 %q", in.Side)
+	}
+
+	a.mu.RLock()
+	fl := a.flowIdx[in.FlowID]
+	var body []byte
+	var truncated bool
+	var mime string
+	if fl != nil {
+		if side == "request" {
+			body, truncated, mime = fl.RequestBody, fl.RequestTruncated, fl.RequestMimeType
+		} else {
+			body, truncated, mime = fl.ResponseBody, fl.ResponseTruncated, fl.ResponseMimeType
+		}
+	}
+	a.mu.RUnlock()
+	if fl == nil {
+		return nil, mcp.Errorf(mcp.CodeInvalidParams, "找不到流量 %s（可能已被清空或删除）", in.FlowID)
+	}
+
+	chunk := flowquery.SliceBody(body, in.Offset, in.Limit)
+	// 截断标记只有调用方知道（SliceBody 看不到 Flow 的标记）。
+	chunk.Truncated = truncated
+	return map[string]any{
+		"flowId":    in.FlowID,
+		"side":      side,
+		"mimeType":  mime,
+		"chunk":     chunk,
+		"total":     chunk.Total,
+		"hasMore":   chunk.HasMore,
+		"truncated": truncated,
+	}, nil
 }

@@ -9,7 +9,9 @@
 package flowquery
 
 import (
+	"encoding/base64"
 	"strings"
+	"unicode/utf8"
 
 	"wproxyman/internal/models"
 )
@@ -282,4 +284,78 @@ func itoa(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// 正文分段读取：给 AI 用的时候，正文必须能"按需取一小段"，
+// 否则一次读取就可能把上下文撑爆（响应体上限默认 64 MB）。
+
+// DefaultBodyLimit / MaxBodyLimit 限制单次读取的字节数。
+const (
+	DefaultBodyLimit = 32 << 10  // 32 KiB
+	MaxBodyLimit     = 256 << 10 // 256 KiB
+)
+
+// BodyChunk 是一次正文分片的结果。
+type BodyChunk struct {
+	Offset  int  `json:"offset"`
+	Total   int  `json:"total"`   // 正文总字节数
+	Length  int  `json:"length"`  // 本次返回的字节数
+	HasMore bool `json:"hasMore"` // 还有后续，可带更大的 offset 继续读
+	// 可打印内容给 text，二进制给 base64（二者只会有一个非空）。
+	Text   string `json:"text,omitempty"`
+	Base64 string `json:"base64,omitempty"`
+	// Truncated 表示这段正文在保存时已被上限截断（读到结尾也不代表拿到全部）。
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// SliceBody 按 offset/limit 取正文分片；limit 缺省/越界会被夹到合理范围。
+func SliceBody(data []byte, offset, limit int) BodyChunk {
+	if limit <= 0 {
+		limit = DefaultBodyLimit
+	}
+	if limit > MaxBodyLimit {
+		limit = MaxBodyLimit
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	total := len(data)
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	chunk := data[offset:end]
+	out := BodyChunk{
+		Offset:  offset,
+		Total:   total,
+		Length:  len(chunk),
+		HasMore: end < total,
+	}
+	if isPrintableText(chunk) {
+		out.Text = string(chunk)
+	} else {
+		out.Base64 = base64.StdEncoding.EncodeToString(chunk)
+	}
+	return out
+}
+
+// isPrintableText 判断这段字节能否安全地按文本交给模型。
+// 空串按文本处理（调用方会看到空内容，而不是一段空 base64）。
+func isPrintableText(b []byte) bool {
+	if len(b) == 0 {
+		return true
+	}
+	if !utf8.Valid(b) {
+		return false
+	}
+	// 允许常见空白；其它控制字符（除 NUL 外）也基本无害，但 NUL 说明这是二进制。
+	for _, c := range b {
+		if c == 0 {
+			return false
+		}
+	}
+	return true
 }
