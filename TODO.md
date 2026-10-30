@@ -142,7 +142,7 @@
 - [x] `internal/proxy`：流式透传（`http_forward.go` 的 `streamResponse`），读到即写 + Flush；`MaxBodyBytes` 只限制保存、不限制转发；RequestTimeout 拆成「等响应头」与「读正文」，流式不设总时长上限
 - [x] `internal/proxy/sse.go`：增量 SSE / NDJSON 解析器（CRLF/CR/LF、多行 data、注释心跳、id/retry、`[DONE]`、跨块 UTF-8、超长行防御）
 - [x] 事件推送：`Config.OnStream` → `flow:stream` 增量事件（按 16 条或 100ms 批量打包，不重推整条 flow）
-- [x] 测试：29 个用例（5 个端到端流式 + 24 个解析器），`go test ./...` 全绿 —— commit `293c535`
+- [x] 测试：31 个 Go 用例（7 个端到端流式，含 **MITM HTTPS 与 HTTP/2 下的逐块下发** + 24 个解析器） + 19 个前端单测（vitest，`make test` 一并执行）+ `flow:stream` 契约测试 —— commit `293c535` / `df1ec23`
 - [x] OpenAI 兼容预设解析器（`chat.completions`：delta.content / reasoning_content / tool_calls 分片按 index 归并 / finish_reason / usage；`responses` API：语义事件）
 - [x] Anthropic 兼容预设解析器（message_start / content_block_* / message_delta；text_delta / thinking_delta / input_json_delta 把 tool_use 参数拼回 JSON）
 - [x] 自定义 JSONPath 解析规则（存 `settings.streamRules`，设置内可增删改；含 matchPath 与 stopValue）

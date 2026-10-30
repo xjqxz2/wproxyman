@@ -48,8 +48,9 @@ test-go:
 	@$(GO) test ./...
 
 test-frontend:
-	@echo "==> Frontend type check"
+	@echo "==> Frontend type check + unit tests"
 	@cd frontend && npx --no-install tsc --noEmit
+	@cd frontend && npx --no-install vitest run
 
 # --- dependencies -------------------------------------------------------------
 
