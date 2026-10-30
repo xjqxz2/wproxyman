@@ -171,3 +171,47 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestStatsOf(t *testing.T) {
+	flows := sample()
+	st := StatsOf(flows, 3)
+
+	if st.Total != 6 {
+		t.Fatalf("total = %d, want 6（nil 不计）", st.Total)
+	}
+	if st.Failed != 2 {
+		t.Fatalf("failed = %d, want 2", st.Failed)
+	}
+	if st.Stream != 1 {
+		t.Fatalf("stream = %d, want 1", st.Stream)
+	}
+	if st.StatusClass["2xx"] != 4 || st.StatusClass["4xx"] != 1 || st.StatusClass["5xx"] != 1 {
+		t.Fatalf("状态分类不对：%v", st.StatusClass)
+	}
+	// api.example.com 有 3 条，应排第一。
+	if len(st.TopHosts) == 0 || st.TopHosts[0].Host != "api.example.com" || st.TopHosts[0].Count != 3 {
+		t.Fatalf("域名排行不对：%+v", st.TopHosts)
+	}
+	if st.TopHosts[0].Failed != 1 {
+		t.Fatalf("域名失败数不对：%+v", st.TopHosts[0])
+	}
+	// topN 生效。
+	if len(st.TopHosts) > 3 {
+		t.Fatalf("topN 未生效：%d", len(st.TopHosts))
+	}
+	// 最慢的几条只给摘要，不带正文。
+	if len(st.Slowest) == 0 {
+		t.Fatalf("应有最慢列表")
+	}
+	raw, _ := json.Marshal(st)
+	if contains(string(raw), "SECRET-BODY") || contains(string(raw), "responseBody") {
+		t.Fatalf("统计里不应出现正文：%s", raw)
+	}
+}
+
+func TestStatsOfEmpty(t *testing.T) {
+	st := StatsOf(nil, 0)
+	if st.Total != 0 || len(st.TopHosts) != 0 || len(st.Slowest) != 0 {
+		t.Fatalf("空输入应返回空统计：%+v", st)
+	}
+}

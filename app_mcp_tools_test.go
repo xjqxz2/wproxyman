@@ -238,3 +238,58 @@ func TestMCPGetFlowBodyTool(t *testing.T) {
 		t.Fatalf("缺 flowId 应报错")
 	}
 }
+
+// get_flow / get_stats：单条摘要与整体统计，都不带正文。
+func TestMCPGetFlowAndStatsTools(t *testing.T) {
+	app := NewApp()
+	app.flows = []*models.Flow{
+		{ID: "1", Method: "GET", Host: "api.example.com", Path: "/a", FullURL: "https://api.example.com/a",
+			ResponseStatus: 200, Duration: 5, ResponseSize: 10, ResponseBody: []byte("SECRET-BODY")},
+		{ID: "2", Method: "GET", Host: "api.example.com", Path: "/b", FullURL: "https://api.example.com/b",
+			ResponseStatus: 500, Duration: 900, ResponseSize: 20, Error: "boom"},
+	}
+	for _, f := range app.flows {
+		app.flowIdx[f.ID] = f
+	}
+	reg, _, err := app.buildMCPRegistry()
+	if err != nil {
+		t.Fatalf("buildMCPRegistry: %v", err)
+	}
+
+	// get_flow：返回单条摘要。
+	res, errObj := reg.Call("get_flow", json.RawMessage(`{"flowId":"2","fields":["fullUrl"]}`))
+	if errObj != nil {
+		t.Fatalf("get_flow 失败：%v", errObj)
+	}
+	raw, _ := json.Marshal(res)
+	if !containsStr(string(raw), "boom") || !containsStr(string(raw), "fullUrl") {
+		t.Fatalf("摘要内容不对：%s", raw)
+	}
+	if containsStr(string(raw), "SECRET-BODY") {
+		t.Fatalf("摘要不应带正文：%s", raw)
+	}
+	// 不存在的 id 应报错。
+	if _, e := reg.Call("get_flow", json.RawMessage(`{"flowId":"nope"}`)); e == nil {
+		t.Fatalf("不存在的 flowId 应报错")
+	}
+	// 非法字段应报错。
+	if _, e := reg.Call("get_flow", json.RawMessage(`{"flowId":"1","fields":["responseBody"]}`)); e == nil {
+		t.Fatalf("请求正文字段应被拒")
+	}
+
+	// get_stats：域名排行与状态分布。
+	res, errObj = reg.Call("get_stats", json.RawMessage(`{"topN":5}`))
+	if errObj != nil {
+		t.Fatalf("get_stats 失败：%v", errObj)
+	}
+	st, _ := res.(flowquery.Stats)
+	if st.Total != 2 || st.Failed != 1 {
+		t.Fatalf("统计不对：%+v", st)
+	}
+	if len(st.TopHosts) != 1 || st.TopHosts[0].Host != "api.example.com" || st.TopHosts[0].Count != 2 {
+		t.Fatalf("域名排行不对：%+v", st.TopHosts)
+	}
+	if len(st.Slowest) == 0 || st.Slowest[0].ID != "2" {
+		t.Fatalf("最慢请求应是 id=2：%+v", st.Slowest)
+	}
+}

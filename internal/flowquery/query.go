@@ -10,6 +10,7 @@ package flowquery
 
 import (
 	"encoding/base64"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -18,6 +19,7 @@ import (
 
 // Filter 描述筛选条件；零值表示不筛。
 type Filter struct {
+	ID         string // 精确匹配流量 id（get_flow 用）
 	Host       string // 精确匹配主机名（不区分大小写）
 	Method     string // 精确匹配方法（不区分大小写）
 	Status     string // "200" 精确；"2xx"/"4xx"/"5xx" 按类；"failed" 只看失败
@@ -149,6 +151,9 @@ func Query(flows []*models.Flow, f Filter, p Page, fields []string) Result {
 
 // matches 判断单条流量是否命中筛选条件。
 func matches(fl *models.Flow, f Filter) bool {
+	if f.ID != "" && fl.ID != f.ID {
+		return false
+	}
 	if f.Host != "" && !strings.EqualFold(fl.Host, f.Host) {
 		return false
 	}
@@ -358,4 +363,106 @@ func isPrintableText(b []byte) bool {
 		}
 	}
 	return true
+}
+
+// Stats 是流量统计结果（给 AI 一个"整体在发生什么"的概览，而不是逐条数据）。
+type Stats struct {
+	Total       int            `json:"total"`
+	Failed      int            `json:"failed"`
+	Stream      int            `json:"stream"`
+	WebSocket   int            `json:"webSocket"`
+	TotalBytes  int64          `json:"totalResponseBytes"`
+	StatusClass map[string]int `json:"statusClass"` // "2xx"/"4xx"/"5xx"/"other"
+	TopHosts    []HostStat     `json:"topHosts"`    // 按请求数排序
+	Slowest     []FlowSummary  `json:"slowest"`     // 按耗时排序（摘要形式）
+}
+
+// HostStat 是单个域名的汇总。
+type HostStat struct {
+	Host   string `json:"host"`
+	Count  int    `json:"count"`
+	Failed int    `json:"failed"`
+	Bytes  int64  `json:"bytes"`
+	AvgMs  int64  `json:"avgDurationMs"`
+}
+
+// StatsOf 汇总一批流量；topN<=0 时用默认 10。
+func StatsOf(flows []*models.Flow, topN int) Stats {
+	if topN <= 0 {
+		topN = 10
+	}
+	st := Stats{StatusClass: map[string]int{}}
+	hosts := map[string]*HostStat{}
+	var durSum = map[string]int64{}
+	for _, f := range flows {
+		if f == nil {
+			continue
+		}
+		st.Total++
+		if isFailed(f) {
+			st.Failed++
+		}
+		if f.IsStream {
+			st.Stream++
+		}
+		if f.IsWebSocket {
+			st.WebSocket++
+		}
+		st.TotalBytes += f.ResponseSize
+		switch {
+		case f.ResponseStatus >= 500:
+			st.StatusClass["5xx"]++
+		case f.ResponseStatus >= 400:
+			st.StatusClass["4xx"]++
+		case f.ResponseStatus >= 300:
+			st.StatusClass["3xx"]++
+		case f.ResponseStatus >= 200:
+			st.StatusClass["2xx"]++
+		default:
+			st.StatusClass["other"]++
+		}
+		h, ok := hosts[f.Host]
+		if !ok {
+			h = &HostStat{Host: f.Host}
+			hosts[f.Host] = h
+		}
+		h.Count++
+		if isFailed(f) {
+			h.Failed++
+		}
+		h.Bytes += f.ResponseSize
+		durSum[f.Host] += f.Duration
+	}
+	for host, h := range hosts {
+		if h.Count > 0 {
+			h.AvgMs = durSum[host] / int64(h.Count)
+		}
+		st.TopHosts = append(st.TopHosts, *h)
+	}
+	// 请求数降序；数量相同按域名升序，保证结果稳定（便于测试与缓存）。
+	sort.Slice(st.TopHosts, func(i, j int) bool {
+		if st.TopHosts[i].Count != st.TopHosts[j].Count {
+			return st.TopHosts[i].Count > st.TopHosts[j].Count
+		}
+		return st.TopHosts[i].Host < st.TopHosts[j].Host
+	})
+	if len(st.TopHosts) > topN {
+		st.TopHosts = st.TopHosts[:topN]
+	}
+
+	// 最慢的几条：只给摘要，不带正文。
+	sorted := make([]*models.Flow, 0, len(flows))
+	for _, f := range flows {
+		if f != nil {
+			sorted = append(sorted, f)
+		}
+	}
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Duration > sorted[j].Duration })
+	for i, f := range sorted {
+		if i >= topN {
+			break
+		}
+		st.Slowest = append(st.Slowest, *summarize(f, nil))
+	}
+	return st
 }

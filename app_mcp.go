@@ -83,6 +83,42 @@ func (a *App) buildMCPRegistry() (*mcp.Registry, []string, error) {
 
 	if err := reg.AddHandler(
 		mcp.ToolSpec{
+			Name:   "get_flow",
+			Method: "get_flow",
+			Group:  "flows",
+			Tier:   mcp.TierRead,
+			Description: "取单条流量的摘要（和 list_flows 里的条目同构）。" +
+				"正文不在这里返回，需要时用 get_flow_body 分段读。",
+		},
+		[]mcp.Param{
+			{Name: "flowId", Type: "string", Description: "流量 id", Required: true},
+			{Name: "fields", Type: "array", Items: "string", Description: "额外字段（同 list_flows）"},
+		},
+		func(args json.RawMessage) (any, *mcp.Error) { return a.mcpGetFlow(args) },
+	); err != nil {
+		return nil, warns, err
+	}
+
+	if err := reg.AddHandler(
+		mcp.ToolSpec{
+			Name:   "get_stats",
+			Method: "get_stats",
+			Group:  "flows",
+			Tier:   mcp.TierRead,
+			Description: "整体统计：总条数、失败数、流式/WebSocket 数、状态码分布、" +
+				"域名排行（含失败数与平均耗时）、最慢的若干条。用来快速判断\"哪里不对\"，" +
+				"而不是逐条浏览。",
+		},
+		[]mcp.Param{
+			{Name: "topN", Type: "integer", Description: "排行取前几条，默认 10", Default: 10},
+		},
+		func(args json.RawMessage) (any, *mcp.Error) { return a.mcpGetStats(args) },
+	); err != nil {
+		return nil, warns, err
+	}
+
+	if err := reg.AddHandler(
+		mcp.ToolSpec{
 			Name:   "get_flow_body",
 			Method: "get_flow_body",
 			Group:  "flows",
@@ -208,4 +244,50 @@ func (a *App) mcpGetFlowBody(args json.RawMessage) (any, *mcp.Error) {
 		"hasMore":   chunk.HasMore,
 		"truncated": truncated,
 	}, nil
+}
+
+// mcpGetFlow 返回单条流量的摘要（正文另用 get_flow_body 分段读）。
+func (a *App) mcpGetFlow(args json.RawMessage) (any, *mcp.Error) {
+	var in struct {
+		FlowID string   `json:"flowId"`
+		Fields []string `json:"fields"`
+	}
+	if err := json.Unmarshal(args, &in); err != nil {
+		return nil, mcp.Errorf(mcp.CodeInvalidParams, "参数解析失败：%v", err)
+	}
+	if in.FlowID == "" {
+		return nil, mcp.Errorf(mcp.CodeInvalidParams, "缺少参数 flowId")
+	}
+	for _, f := range in.Fields {
+		if !flowquery.KnownField(f) {
+			return nil, mcp.Errorf(mcp.CodeInvalidParams, "不支持的字段 %q（正文请用 get_flow_body）", f)
+		}
+	}
+	a.mu.RLock()
+	snapshot := make([]*models.Flow, len(a.flows))
+	copy(snapshot, a.flows)
+	a.mu.RUnlock()
+
+	res := flowquery.Query(snapshot, flowquery.Filter{ID: in.FlowID}, flowquery.Page{Limit: 1}, in.Fields)
+	if res.Returned == 0 {
+		return nil, mcp.Errorf(mcp.CodeInvalidParams, "找不到流量 %s（可能已被清空或删除）", in.FlowID)
+	}
+	return res.Flows[0], nil
+}
+
+// mcpGetStats 返回整体统计（域名排行、状态分布、最慢请求）。
+func (a *App) mcpGetStats(args json.RawMessage) (any, *mcp.Error) {
+	var in struct {
+		TopN int `json:"topN"`
+	}
+	if len(args) > 0 {
+		if err := json.Unmarshal(args, &in); err != nil {
+			return nil, mcp.Errorf(mcp.CodeInvalidParams, "参数解析失败：%v", err)
+		}
+	}
+	a.mu.RLock()
+	snapshot := make([]*models.Flow, len(a.flows))
+	copy(snapshot, a.flows)
+	a.mu.RUnlock()
+	return flowquery.StatsOf(snapshot, in.TopN), nil
 }
