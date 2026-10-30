@@ -11,7 +11,7 @@
 |---|---|---|---|
 | P0 | 系统代理未恢复（关闭软件后断网） | `[x]` 已完成（v1.0.7） | 1 天 |
 | P1 | 流式转发 + SSE / LLM 视图（OpenAI / Anthropic / 非标） | `[x]` 已完成（v1.1.0） | 6–8 天 |
-| P1 | MCP Server：**通过 MCP 控制整个软件**（能力注册表 + 反射） | `[ ]` | 6–7 天 |
+| P1 | MCP Server：**通过 MCP 控制整个软件**（能力注册表 + 反射） | `[~]` 后端完成（见下），缺设置面板与文档 | 6–7 天 |
 | P1 | **文档：重写 README（重点：怎么用 + 有什么功能）** | `[x]` 已完成 | 1 天 |
 | P2 | 手机一键接入（二维码 / iOS 描述文件 / adb） | `[ ]` | 2 天 |
 | P2 | WebSocket 双向：手动发帧 / 重放 / 二进制解析 | `[ ]` | 2–3 天 |
@@ -220,18 +220,40 @@ versioning 与 transports 规范。）
 2. **stdio 桥（第二个入口）**：`wproxyman mcp` 子命令，把 stdio 上的 JSON-RPC 转发到上面
    的本地端点 —— 兼容 Claude Desktop 这类只支持 stdio 的客户端；app 没在跑时给出明确提示。
 
-### 子任务
+### 进度（2026-10-30，自动轮次结束时的状态）
 
-- [ ] 后端：`internal/mcp` 协议层（JSON-RPC 2.0 编解码、错误码、**现代 `_meta` 版本校验 + `server/discover` + legacy `initialize` 兼容**、会话 id）
-- [ ] 后端：能力注册表 + 反射 Schema 生成 + 调用分发（含权限档校验）
-- [ ] 后端：AI 友好包装（`list_flows` / `get_flow` / `get_flow_body` / `search_flows` / `get_stats` / `list_capabilities`）
-- [ ] 后端：本地 HTTP 端点 + Bearer token + 审计日志（环形缓冲）
-- [ ] 后端：查询层重构（过滤/分页/字段裁剪），供 MCP 与前端共用（替换"一次返回全部"）
-- [ ] 前端：设置面板新增 MCP 区块（开关、URL/token 复制与轮换、写/危险档开关、审计日志、接入片段）
-- [ ] `main.go`：`wproxyman mcp` stdio 子命令
-- [ ] 测试：握手、tools/list、Schema 生成、分发、鉴权失败、写/危险档拒绝、审计落库、
-      `cleanup` 等内部方法**不在**工具列表里
-- [ ] 文档：README 增加"用 AI 控制 WProxyman"章节（Claude / Cursor 配置步骤）
+**已完成并验证**（提交：`8ae9c63` `31984c6` `1dc8b8a` `d2d0253` `98a3024` `e8cd158` `f137056` `e990ac0` `e96c10d` `263e352` `e4b9523` `f7664e9`）：
+
+- [x] 协议层 `internal/mcp/protocol.go`：JSON-RPC 2.0、错误码（含 `-32022`）、版本协商、`_meta` 解析
+- [x] **dual-era**：现代（`_meta.protocolVersion` + `server/discover`，无握手）与 legacy（`initialize`）都能服务
+- [x] 能力注册表 `registry.go`：元数据手写、签名与 JSON Schema 从反射推导；**生命周期方法硬性拒绝名单**（Cleanup/startup/shutdown/domReady）；handler 型自定义工具
+- [x] `appspec.go`：**43 个工具覆盖整个 App**（read 19 / write 10 / dangerous 12），排除项（Cleanup、GetCACertPEM、GetFlows、以及 4 个 MCP 自管理方法）都有理由且被漂移守卫测试锁住
+- [x] 包装工具：`list_flows`、`get_flow`、`get_flow_body`、`get_stats`、`list_capabilities`（`internal/flowquery` 提供过滤/分页/字段裁剪/统计，正文永不可请求）
+- [x] 服务层 `service.go`：权限按调用现查、审计环形缓冲（只记参数指纹，不记内容）、`isError` 与 JSON-RPC 错误的区分
+- [x] HTTP 传输 `http.go`：`POST /mcp`、Bearer/自定义头令牌（常数时间比较、空令牌拒绝一切）、`MCP-Protocol-Version` 头合并、1 MiB 上限、通知回 202
+- [x] 装配 `app_mcp_server.go`：只绑 `127.0.0.1`、设置项（默认关闭）、令牌自动生成与轮换（动态读取，无需重启）、随应用起停
+- [x] stdio 桥 `mcp_bridge.go`：`wproxyman mcp`，失败路径都有明确提示
+- [x] 测试：`internal/mcp` 20 条（协议/注册表/handler/服务/HTTP）+ `internal/flowquery` 13 条 + `app_mcp*_test.go` 端到端若干；**连续三次全量 `go test ./...` 全绿**
+
+**临时启用方式（设置面板做好之前）**：编辑 `settings.json`（Windows `%AppData%\wproxyman`，macOS `~/Library/Application Support/wproxyman`，Linux `~/.config/wproxyman`）：
+
+```json
+{ "mcpEnabled": true, "mcpPort": 10087, "mcpToken": "<自己填一个随机串>", "mcpAllowWrite": false, "mcpAllowDangerous": false }
+```
+
+重启应用后端点即 `http://127.0.0.1:10087/mcp`，用 `Authorization: Bearer <token>` 调用。
+
+**剩余工作（按顺序）**：
+
+- [ ] **设置面板 MCP 区块**（唯一的功能缺口）：
+  1. `cd frontend && npx wails generate module`（或 `wails build`）重新生成绑定，让 `GetMCPStatus` / `SetMCPEnabled` / `RotateMCPToken` 出现在 `wailsjs/go/main/App.d.ts`；
+  2. `services/api.ts` 加三个封装；
+  3. `SettingsPanel.tsx` 在"流式解析规则"卡片后加一张卡片：启用开关、端口输入、URL 与令牌（带复制按钮）、轮换令牌、`allowWrite`/`allowDangerous` 两个开关（开启时给出醒目警告文案）、审计日志列表（时间/工具/档位/结果）；
+  4. i18n 中英各补一组 `settings.mcp*` 键（注意 en/zh 键必须一一对应）；
+  5. 用截图环境（`/tmp/shots/readme-shots.js` 那套 Chromium + Wails 桩）渲染验证，**至少确认两个档位开关的警告文案与令牌显示正确**。
+- [ ] **README「用 AI 控制 WProxyman」章节**：Cursor / Claude Code（填 URL + 令牌头）与 Claude Desktop（`command: /path/to/WProxyman`、`args: ["mcp"]`）两种接入写法；权限三档说明；`list_capabilities` 用法；安全提示（只在回环、令牌可轮换、审计可查）；已知限制（不支持 SSE 推送、`prompts/list` 为空）。
+- [ ] **发版**（v1.2.0）：MCP + README 一起。
+- [ ] 可选增强：`resources/read` 真正返回 CA 证书内容；`prompts/list` 提供 `explain_flow` / `draft_rule` 提示模板；`search_flows`（现在 `list_flows` 的 `search` 参数已覆盖，故未单列）。
 
 ### 验收标准
 
