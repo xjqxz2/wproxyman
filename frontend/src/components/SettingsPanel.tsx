@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { X, ShieldCheck, ShieldAlert, Download, Upload, Save, FolderOpen, MonitorSmartphone, Globe, Trash2 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { useApp } from '../store';
 import { api } from '../services/api';
 import { useI18n } from '../i18n';
@@ -108,6 +109,8 @@ const [bodyInput, setBodyInput] = useState(() => String(Math.round((useApp.getSt
   // 灞€鍩熺綉 IP 鍒楄〃涓庡姞杞借垂璐ユ彁绀恒€
 const [devices, setDevices] = useState<string[]>([]);
   const [devicesError, setDevicesError] = useState('');
+  // 多网卡时让用户选手机能访问的那个地址（二维码与命令都跟着它走）。
+  const [lanIP, setLanIP] = useState('');
   // 局域网连接开关切换结果消息。
   const [lanMsg, setLanMsg] = useState<OpMessage>(null);
 
@@ -142,7 +145,9 @@ useEffect(() => {
     api
       .getLANIPs()
       .then((ips) => {
-        if (!cancelled) setDevices(ips);
+        if (cancelled) return;
+        setDevices(ips);
+        setLanIP((cur) => cur || (ips.length > 0 ? ips[0] : ''));
       })
       .catch((err) => {
         console.error('Failed to load LAN IPs', err);
@@ -518,6 +523,16 @@ const handleRemoveCert = async () => {
       setMcpMsg({ text: `${t('settings.mcpSaveFailed')} ${String(err)}`, ok: false });
     } finally {
       setMcpBusy(false);
+    }
+  };
+
+  const copyLan = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setLanMsg({ text: t('settings.copied'), ok: true });
+    } catch (err) {
+      console.error('clipboard failed', err);
+      setLanMsg({ text: t('settings.copyFailed'), ok: false });
     }
   };
 
@@ -1011,6 +1026,65 @@ if (e.target === e.currentTarget) onClose();
             {/* 手机要填的完整代理地址：端口固定（默认 10086），手机端配置需保持一致。 */}
             {devices.length > 0 && (
               <div style={hintStyle}>{t('settings.devicesProxyHint', { port: proxy.port })}</div>
+            )}
+
+            {/* ===== 一键接入：二维码 + adb 命令 ===== */}
+            {devices.length > 0 && lanIP && (
+              <div style={{ marginTop: 10 }}>
+                {devices.length > 1 && (
+                  <div style={{ ...rowStyle, gap: 6 }}>
+                    <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t('settings.pickAddress')}</span>
+                    <select
+                      className="input"
+                      style={{ width: 160 }}
+                      value={lanIP}
+                      onChange={(e) => setLanIP(e.target.value)}
+                      aria-label={t('settings.pickAddress')}
+                    >
+                      {devices.map((ip) => (
+                        <option key={ip} value={ip}>
+                          {ip}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div style={hintStyle}>{t('settings.qrHint')}</div>
+                <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 8 }}>
+                  {[
+                    { key: 'settings.qrGuide', url: `http://${lanIP}:${proxy.port}/wpx-cert` },
+                    { key: 'settings.qrProfile', url: `http://${lanIP}:${proxy.port}/wpx-mobileconfig` },
+                    { key: 'settings.qrProxy', url: `${lanIP}:${proxy.port}` },
+                  ].map((item) => (
+                    <div key={item.key} style={{ textAlign: 'center', width: 148 }}>
+                      {/* 白底：二维码在深色主题下必须垫白，否则手机扫不出来 */}
+                      <div style={{ background: '#fff', padding: 6, borderRadius: 6, display: 'inline-block' }}>
+                        <QRCodeSVG value={item.url} size={128} level="M" />
+                      </div>
+                      <div style={{ ...hintStyle, marginTop: 4 }}>{t(item.key)}</div>
+                      <button type="button" className="btn" style={{ marginTop: 2 }} onClick={() => copyLan(item.url)}>
+                        {t('settings.mcpCopy')}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Android 模拟器：adb 一键设置/还原代理 */}
+                <div style={{ ...hintStyle, marginTop: 10 }}>{t('settings.adbTitle')}</div>
+                {[
+                  { label: t('settings.adbSet'), cmd: `adb shell settings put global http_proxy ${lanIP}:${proxy.port}` },
+                  { label: t('settings.adbClear'), cmd: 'adb shell settings put global http_proxy :0' },
+                ].map((item) => (
+                  <div key={item.label} style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+                    <span style={{ ...hintStyle, marginTop: 0, minWidth: 96 }}>{item.label}</span>
+                    <code style={{ ...monoStyle, flex: 1, overflowX: 'auto', whiteSpace: 'nowrap' }}>{item.cmd}</code>
+                    <button type="button" className="btn" onClick={() => copyLan(item.cmd)}>
+                      {t('settings.mcpCopy')}
+                    </button>
+                  </div>
+                ))}
+              </div>
             )}
             {/* 局域网连接开关：将代理绑定到 0.0.0.0 供其他设备接入。 */}
             <div style={rowStyle}>
