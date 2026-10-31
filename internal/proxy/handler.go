@@ -59,6 +59,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case certInstallPagePath:
 			h.serveCertInstallPage(w)
 			return
+		case mobileconfigPath:
+			h.serveMobileconfig(w, r)
+			return
 		}
 	}
 	h.handleHTTP(w, r)
@@ -100,6 +103,8 @@ code{background:#00000055;border:1px solid #33363b;border-radius:4px;padding:1px
 <h1>WProxyman 证书安装 / Certificate Install</h1>
 <div class="lang">请确认手机已通过本代理上网后，再下载并信任证书。</div>
 <a class="btn" href="` + certDownloadPath + `">下载证书 / Download Certificate</a>
+<p><a class="btn" href="` + mobileconfigPath + `">iOS 一键配置（证书 + 代理）/ iOS one-tap profile</a>
+（仅 iOS：装好后仍需到 设置 → 通用 → 关于本机 → 证书信任设置 打开完全信任）</p>
 
 <h2>iOS</h2>
 <ol>
